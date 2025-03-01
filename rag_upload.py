@@ -762,6 +762,191 @@ class AzureSearchIndexManager:
         try:
             # Create the index
             index = self._build_index_definition()
+            
+            # Log the index configuration for debugging
+            index_dict = index.as_dict()
+            logger.info(f"Creating index with configuration: {json.dumps(index_dict, indent=2)[:500]}...")
+            
+            # Check if semantic settings are present
+            if "semantic" in index_dict:
+                logger.info("Semantic settings are present in the index configuration")
+            else:
+                logger.warning("Semantic settings are NOT present in the index configuration")
+                
+                # If semantic search is enabled but settings are not in the serialized index,
+                # we need to manually add them
+                if self.config.semantic_search:
+                    logger.info("Manually adding semantic settings to the index")
+                    
+                    # Create a raw index definition that includes semantic settings
+                    raw_index = {
+                        "name": self.config.index_name,
+                        "fields": [
+                            {
+                                "name": "id",
+                                "type": "Edm.String",
+                                "key": True,
+                                "searchable": False,
+                                "filterable": False,
+                                "sortable": False,
+                                "facetable": False
+                            },
+                            {
+                                "name": "content",
+                                "type": "Edm.String",
+                                "searchable": True,
+                                "filterable": False,
+                                "sortable": False,
+                                "facetable": False,
+                                "analyzer": "en.microsoft"
+                            },
+                            {
+                                "name": "file_name",
+                                "type": "Edm.String",
+                                "searchable": False,
+                                "filterable": True,
+                                "sortable": False,
+                                "facetable": False
+                            },
+                            {
+                                "name": "file_path",
+                                "type": "Edm.String",
+                                "searchable": False,
+                                "filterable": True,
+                                "sortable": False,
+                                "facetable": False
+                            },
+                            {
+                                "name": "file_extension",
+                                "type": "Edm.String",
+                                "searchable": False,
+                                "filterable": True,
+                                "sortable": False,
+                                "facetable": False
+                            },
+                            {
+                                "name": "file_size",
+                                "type": "Edm.Int64",
+                                "searchable": False,
+                                "filterable": True,
+                                "sortable": False,
+                                "facetable": False
+                            },
+                            {
+                                "name": "last_modified",
+                                "type": "Edm.DateTimeOffset",
+                                "searchable": False,
+                                "filterable": True,
+                                "sortable": True,
+                                "facetable": False
+                            },
+                            {
+                                "name": "chunk_id",
+                                "type": "Edm.Int32",
+                                "searchable": False,
+                                "filterable": True,
+                                "sortable": False,
+                                "facetable": False
+                            },
+                            {
+                                "name": "chunk_total",
+                                "type": "Edm.Int32",
+                                "searchable": False,
+                                "filterable": True,
+                                "sortable": False,
+                                "facetable": False
+                            },
+                            {
+                                "name": "language",
+                                "type": "Edm.String",
+                                "searchable": False,
+                                "filterable": True,
+                                "sortable": False,
+                                "facetable": False
+                            },
+                            {
+                                "name": "title",
+                                "type": "Edm.String",
+                                "searchable": True,
+                                "filterable": False,
+                                "sortable": False,
+                                "facetable": False,
+                                "analyzer": "en.microsoft"
+                            },
+                            {
+                                "name": "author",
+                                "type": "Edm.String",
+                                "searchable": True,
+                                "filterable": False,
+                                "sortable": False,
+                                "facetable": False,
+                                "analyzer": "en.microsoft"
+                            }
+                        ],
+                        "semantic": {
+                            "configurations": [{
+                                "name": "semantic-config",
+                                "prioritizedFields": {
+                                    "titleField": {"fieldName": "title"},
+                                    "prioritizedContentFields": [{"fieldName": "content"}],
+                                    "prioritizedKeywordsFields": []
+                                }
+                            }]
+                        }
+                    }
+                    
+                    # Add vector search configuration if needed
+                    if self.config.vector_search:
+                        raw_index["fields"].append({
+                            "name": "content_vector",
+                            "type": "Collection(Edm.Single)",
+                            "searchable": True,
+                            "dimensions": self.config.vector_dimensions,
+                            "vectorSearchConfiguration": "vector-config"
+                        })
+                        
+                        raw_index["vectorSearch"] = {
+                            "algorithms": [
+                                {
+                                    "name": "vector-config",
+                                    "kind": "hnsw",
+                                    "hnswParameters": {
+                                        "m": 16,
+                                        "efConstruction": 400,
+                                        "efSearch": 500,
+                                        "metric": "cosine"
+                                    }
+                                }
+                            ]
+                        }
+                    
+                    # Use the REST API directly
+                    # Use the correct API version for semantic search
+                    api_version = "2024-11-01-preview"
+                    endpoint = f"{self.config.endpoint}/indexes/{self.config.index_name}?api-version={api_version}"
+                    headers = {
+                        "Content-Type": "application/json",
+                        "api-key": self.config.api_key
+                    }
+                    
+                    logger.info(f"Using REST API with API version: {api_version}")
+                    
+                    try:
+                        # Send the request
+                        response = requests.put(endpoint, headers=headers, json=raw_index)
+                        response_text = response.text
+                        
+                        if response.status_code >= 400:
+                            logger.error(f"Error response: {response_text}")
+                            response.raise_for_status()
+                        
+                        logger.info(f"Index {self.config.index_name} created with semantic settings via REST API")
+                        return
+                    except Exception as custom_request_error:
+                        logger.error(f"Error with REST API request: {custom_request_error}")
+                        logger.info("Falling back to SDK method without semantic settings")
+            
+            # Use the SDK to create the index if we didn't use the REST API
             result = self.index_client.create_or_update_index(index)
             logger.info(f"Index {self.config.index_name} created or updated successfully")
         except Exception as e:
@@ -808,6 +993,7 @@ class AzureSearchIndexManager:
         index_additional_properties = {}
         
         if self.config.vector_search:
+            logger.info("Adding vector search configuration to index")
             # Create a field definition manually with required vector properties
             content_vector_field = {
                 "name": "content_vector",
@@ -837,42 +1023,69 @@ class AzureSearchIndexManager:
             index_additional_properties["vectorSearch"] = vector_search_config
         
         if self.config.semantic_search:
+            logger.info("Adding semantic search configuration to index")
             # Use a dictionary-based configuration for semantic search
             semantic_config = {
-                "defaultConfiguration": "semantic-config",
                 "configurations": [{
                     "name": "semantic-config",
                     "prioritizedFields": {
                         "titleField": {"fieldName": "title"},
-                        "contentFields": [{"fieldName": "content"}],
-                        "keywordsFields": []
+                        "prioritizedContentFields": [{"fieldName": "content"}],
+                        "prioritizedKeywordsFields": []
                     }
                 }]
             }
             
-            index_additional_properties["semanticSettings"] = semantic_config
+            index_additional_properties["semantic"] = semantic_config
+            logger.info(f"Semantic configuration: {json.dumps(semantic_config, indent=2)}")
         
         # Create the index with basic fields
         index = SearchIndex(name=self.config.index_name, fields=fields)
         
         # Add any additional properties to the index
         for key, value in index_additional_properties.items():
+            logger.info(f"Adding additional property to index: {key}")
             index.additional_properties[key] = value
         
         # For vector search, we need to hack around SDK limitations by modifying the serialized index
         if self.config.vector_search:
+            logger.info("Applying vector search workaround")
+            # Convert the index to a dictionary for direct manipulation
+            index_dict = index.as_dict()
+            
             # Get the current fields list
-            current_fields = index.as_dict().get("fields", [])
+            current_fields = index_dict.get("fields", [])
             
             # Add our custom vector field directly
             current_fields.append(content_vector_field)
             
-            # Replace the fields in the index dictionary
-            index.additional_properties["fields"] = current_fields
+            # Create a new index with our modified properties
+            new_index = SearchIndex(name=self.config.index_name)
             
-            # Remove the original fields to avoid duplication
-            # This is a hack, but needed to work around SDK limitations
-            index._fields = []
+            # Copy all properties from the original index dictionary
+            for key, value in index_dict.items():
+                if key == "fields":
+                    # Skip fields as we'll handle them separately
+                    continue
+                logger.info(f"Copying property to new index: {key}")
+                new_index.additional_properties[key] = value
+            
+            # Add our modified fields
+            new_index.additional_properties["fields"] = current_fields
+            
+            # Make sure semantic settings are preserved if enabled
+            if self.config.semantic_search and "semantic" in index_additional_properties:
+                logger.info("Explicitly adding semantic settings to new index")
+                new_index.additional_properties["semantic"] = index_additional_properties["semantic"]
+            
+            # Check if semantic settings are in the new index
+            if "semantic" in new_index.additional_properties:
+                logger.info("Semantic settings are present in the new index")
+            else:
+                logger.warning("Semantic settings are NOT present in the new index")
+            
+            # Use the new index with properly configured fields and settings
+            return new_index
         
         return index
 
