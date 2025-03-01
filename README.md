@@ -13,6 +13,10 @@ This utility processes documents from a directory, intelligently chunks them, an
 - Document metadata extraction and preservation
 - Configurable chunk sizes and overlap
 - Language detection
+- Advanced pattern-based section detection for better chunking
+- Support for both text-embedding-ada-002 and text-embedding-3-large models
+- Automatic vector dimension adjustment based on the embedding model
+- Regex-based file filtering for inclusion/exclusion
 
 ## Prerequisites
 
@@ -23,7 +27,7 @@ This utility processes documents from a directory, intelligently chunks them, an
 ## Required Python Libraries
 
 ```bash
-pip install azure-search-documents PyPDF2 python-docx pandas bs4 python-pptx langdetect requests
+pip install azure-search-documents azure-core PyPDF2 python-docx pandas bs4 python-pptx langdetect requests
 ```
 
 ## Usage
@@ -48,7 +52,7 @@ python rag_upload.py --folder <documents-folder> --endpoint <search-endpoint> --
 - `--aoai-endpoint`: Azure OpenAI endpoint for generating embeddings
 - `--aoai-key`: Azure OpenAI API key
 - `--aoai-deployment`: Azure OpenAI deployment name for embeddings model
-- `--vector-dimensions`: Dimensions for vector embeddings (default: 1536)
+- `--vector-dimensions`: Dimensions for vector embeddings (default: 1536 for ada-002, 3072 for text-embedding-3-large)
 - `--skip-vectors`: Skip vector processing even if vector search is enabled
 - `--force-recreate`: Force recreation of the search index
 - `--include`: File patterns to include (regex, can specify multiple)
@@ -62,10 +66,16 @@ python rag_upload.py --folder <documents-folder> --endpoint <search-endpoint> --
 python rag_upload.py --folder "C:\Documents\rag" --endpoint https://mysearch.search.windows.net --key YOUR_SEARCH_KEY --index myindex
 ```
 
-### With Vector Search
+### With Vector Search (text-embedding-3-large)
 
 ```bash
 python rag_upload.py --folder "C:\Documents\rag" --endpoint https://mysearch.search.windows.net --key YOUR_SEARCH_KEY --index myindex --vector-search --aoai-endpoint https://myopenai.openai.azure.com/ --aoai-key YOUR_OPENAI_KEY --aoai-deployment text-embedding-3-large
+```
+
+### With Vector Search (text-embedding-ada-002)
+
+```bash
+python rag_upload.py --folder "C:\Documents\rag" --endpoint https://mysearch.search.windows.net --key YOUR_SEARCH_KEY --index myindex --vector-search --aoai-endpoint https://myopenai.openai.azure.com/ --aoai-key YOUR_OPENAI_KEY --aoai-deployment text-embedding-ada-002
 ```
 
 ### With Semantic Search and Custom Chunking
@@ -80,6 +90,64 @@ python rag_upload.py --folder "C:\Documents\rag" --endpoint https://mysearch.sea
 python rag_upload.py --folder "C:\Documents\rag" --endpoint https://mysearch.search.windows.net --key YOUR_SEARCH_KEY --index myindex --include "\.pdf$" "\.docx$"
 ```
 
+## Common Use Cases and Examples
+
+### Processing Technical Documentation
+
+When processing technical documentation with code snippets and structured content:
+
+```bash
+python rag_upload.py --folder "C:\Documents\technical-docs" --endpoint https://mysearch.search.windows.net --key YOUR_SEARCH_KEY --index techdocs --chunk-size 1200 --chunk-overlap 200 --vector-search --aoai-endpoint https://myopenai.openai.azure.com/ --aoai-key YOUR_OPENAI_KEY --aoai-deployment text-embedding-3-large --include "\.md$" "\.pdf$" "\.py$" "\.ipynb$"
+```
+
+### Processing Legal Documents
+
+For legal documents where preserving context is critical:
+
+```bash
+python rag_upload.py --folder "C:\Documents\legal" --endpoint https://mysearch.search.windows.net --key YOUR_SEARCH_KEY --index legal-docs --chunk-size 2000 --chunk-overlap 300 --semantic-search --vector-search --aoai-endpoint https://myopenai.openai.azure.com/ --aoai-key YOUR_OPENAI_KEY --aoai-deployment text-embedding-3-large
+```
+
+### Processing Product Manuals
+
+For product manuals and guides with images and tables:
+
+```bash
+python rag_upload.py --folder "C:\Documents\product-manuals" --endpoint https://mysearch.search.windows.net --key YOUR_SEARCH_KEY --index product-docs --chunk-size 1500 --chunk-overlap 150 --vector-search --aoai-endpoint https://myopenai.openai.azure.com/ --aoai-key YOUR_OPENAI_KEY --aoai-deployment text-embedding-3-large --exclude "\.jpg$" "\.png$" "\.gif$"
+```
+
+### Processing Research Papers
+
+For scientific and research papers with complex content:
+
+```bash
+python rag_upload.py --folder "C:\Documents\research" --endpoint https://mysearch.search.windows.net --key YOUR_SEARCH_KEY --index research-papers --chunk-size 1800 --chunk-overlap 250 --vector-search --semantic-search --aoai-endpoint https://myopenai.openai.azure.com/ --aoai-key YOUR_OPENAI_KEY --aoai-deployment text-embedding-3-large
+```
+
+### Processing Multiple Document Types with Different Chunking Strategies
+
+When you need to process different document types with different chunking strategies, you can run the script multiple times with different parameters:
+
+```bash
+# First process text-heavy documents with smaller chunks
+python rag_upload.py --folder "C:\Documents\mixed" --endpoint https://mysearch.search.windows.net --key YOUR_SEARCH_KEY --index mixed-content --chunk-size 800 --chunk-overlap 100 --include "\.txt$" "\.md$" --vector-search --aoai-endpoint https://myopenai.openai.azure.com/ --aoai-key YOUR_OPENAI_KEY --aoai-deployment text-embedding-3-large
+
+# Then process structured documents with larger chunks
+python rag_upload.py --folder "C:\Documents\mixed" --endpoint https://mysearch.search.windows.net --key YOUR_SEARCH_KEY --index mixed-content --chunk-size 1500 --chunk-overlap 200 --include "\.pdf$" "\.docx$" --vector-search --aoai-endpoint https://myopenai.openai.azure.com/ --aoai-key YOUR_OPENAI_KEY --aoai-deployment text-embedding-3-large
+```
+
+### Processing Large Document Collections
+
+For large document collections, process in batches by subfolder:
+
+```bash
+# Process first batch
+python rag_upload.py --folder "C:\Documents\large-collection\batch1" --endpoint https://mysearch.search.windows.net --key YOUR_SEARCH_KEY --index large-collection --vector-search --aoai-endpoint https://myopenai.openai.azure.com/ --aoai-key YOUR_OPENAI_KEY --aoai-deployment text-embedding-3-large
+
+# Process second batch
+python rag_upload.py --folder "C:\Documents\large-collection\batch2" --endpoint https://mysearch.search.windows.net --key YOUR_SEARCH_KEY --index large-collection --vector-search --aoai-endpoint https://myopenai.openai.azure.com/ --aoai-key YOUR_OPENAI_KEY --aoai-deployment text-embedding-3-large
+```
+
 ## Key Components
 
 ### Document Processing
@@ -91,6 +159,7 @@ The script supports multiple document formats:
 - CSV/Excel: Processes tabular data
 - PPTX: Extracts slide content and titles
 - Text files (TXT, MD, code files): Processes raw text
+- JSON: Intelligently chunks based on object structure
 
 ### Intelligent Chunking
 
@@ -99,6 +168,8 @@ The script uses different chunking strategies based on document type:
 - For code: Respects function and class boundaries
 - For markdown: Splits at heading markers
 - For regular text: Uses paragraph and sentence boundaries
+- For JSON: Chunks based on object structure
+- Advanced pattern-based section detection for better content organization
 
 ### Search Index Structure
 
@@ -124,7 +195,9 @@ The created index includes the following fields:
    - Smaller chunks (500-1000 chars) are more precise but may lose context
 
 2. **Vector search configuration**:
-   - Use `text-embedding-3-large` deployment for best results
+   - Use `text-embedding-3-large` deployment for best results (3072 dimensions)
+   - Use `text-embedding-ada-002` for compatibility with existing systems (1536 dimensions)
+   - The script automatically adjusts vector dimensions based on the model used
    - Ensure your Azure OpenAI service has sufficient rate limits
 
 3. **Processing large document sets**:
