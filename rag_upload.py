@@ -1,27 +1,34 @@
 #!/usr/bin/env python3
 """
-Azure AI Search Document Uploader for RAG
+Azure AI Search Document Uploader for RAG (Retrieval-Augmented Generation)
 
 This script processes documents from a directory, chunks them intelligently,
 and uploads them to an Azure AI Search index for use with RAG chatbots.
+It supports both vector search (embeddings-based) and semantic search capabilities.
+
+Features:
+- Multi-format document processing (PDF, DOCX, TXT, HTML, CSV, PPTX, XLSX)
+- Intelligent text chunking with overlap
+- Vector embeddings generation using Azure OpenAI
+- Semantic search configuration
+- Customizable document filtering
 
 Example Usage:
-  python rag_upload.py --folder "C:/Documents/data" \
-    --endpoint https://yoursearch.search.windows.net \
-    --key your_search_api_key \
-    --index myindex \
-    --vector-search \
-    --aoai-endpoint https://youropenai.openai.azure.com/ \
-    --aoai-key your_openai_api_key \
-    --aoai-deployment text-embedding-3-large
+    python rag_upload.py \
+        --folder "C:/Documents/data" \
+        --endpoint "https://yoursearch.search.windows.net" \
+        --key "your_search_api_key" \
+        --index "myindex" \
+        --vector-search \
+        --aoai-endpoint "https://youropenai.openai.azure.com/" \
+        --aoai-key "your_openai_api_key" \
+        --aoai-deployment "text-embedding-3-large"
 
-This script supports both vector search (embeddings-based) and semantic search 
-capabilities in Azure AI Search.
-
-run with:
-
+Dependencies:
+    pip install azure-search-documents azure-core PyPDF2 python-docx pandas beautifulsoup4 python-pptx langdetect
 """
-# python .\rag_upload.py --folder "C:\Users\marti\Downloads\Documents\rag"  --endpoint https://dennis11search.search.windows.net  --key <SEARCH_API_KEY>  --index myindex --vector-search --aoai-endpoint https://dennisopenai.openai.azure.com/ --aoai-key <OPENAI_API_KEY>  --aoai-deployment text-embedding-3-large --force-recreate
+
+# Standard library imports
 import os
 import argparse
 import json
@@ -33,7 +40,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple, Set, Union
 from dataclasses import dataclass, field
 
-# Azure libraries
+# Azure SDK imports
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents import SearchClient
 from azure.search.documents.indexes import SearchIndexClient
@@ -42,22 +49,36 @@ from azure.search.documents.indexes.models import (
     SimpleField, SearchableField
 )
 
-# Document processing libraries - install with pip
-import requests
-import PyPDF2
-import docx
-import pandas as pd
-from bs4 import BeautifulSoup
-import pptx
-from langdetect import detect
+# Third-party document processing libraries
+import requests  # For REST API calls
+import PyPDF2    # PDF processing
+import docx      # Word document processing
+import pandas as pd  # Excel and CSV processing
+from bs4 import BeautifulSoup  # HTML processing
+import pptx     # PowerPoint processing
+from langdetect import detect  # Language detection
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 @dataclass
 class AzureSearchConfig:
-    """Configuration for Azure AI Search service"""
+    """
+    Configuration settings for Azure AI Search service.
+    
+    Attributes:
+        endpoint (str): The Azure AI Search service endpoint URL
+        api_key (str): The admin API key for the search service
+        index_name (str): Name of the search index to create/update
+        vector_search (bool): Whether to enable vector search capabilities
+        semantic_search (bool): Whether to enable semantic search capabilities
+        vector_dimensions (int): Dimensions for vector embeddings (3072 for text-embedding-3-large, 1536 for ada-002)
+        force_recreate (bool): Whether to force recreation of the index
+    """
     endpoint: str
     api_key: str
     index_name: str
@@ -68,7 +89,15 @@ class AzureSearchConfig:
 
 @dataclass
 class OpenAIConfig:
-    """Configuration for Azure OpenAI service"""
+    """
+    Configuration settings for Azure OpenAI service.
+    
+    Attributes:
+        endpoint (Optional[str]): The Azure OpenAI service endpoint URL
+        api_key (Optional[str]): The API key for the OpenAI service
+        deployment_name (Optional[str]): Name of the embeddings model deployment
+        skip_embeddings (bool): Whether to skip vector embedding generation
+    """
     endpoint: Optional[str] = None
     api_key: Optional[str] = None
     deployment_name: Optional[str] = None
@@ -76,7 +105,16 @@ class OpenAIConfig:
 
 @dataclass
 class ProcessingConfig:
-    """Configuration for document processing"""
+    """
+    Configuration settings for document processing.
+    
+    Attributes:
+        folder_path (str): Path to the folder containing documents to process
+        chunk_size (int): Maximum size of text chunks in characters
+        chunk_overlap (int): Number of characters to overlap between chunks
+        include_filters (List[str]): Regex patterns for files to include
+        exclude_filters (List[str]): Regex patterns for files to exclude
+    """
     folder_path: str
     chunk_size: int = 1000
     chunk_overlap: int = 100
@@ -84,13 +122,38 @@ class ProcessingConfig:
     exclude_filters: List[str] = field(default_factory=list)
 
 class DocumentProcessor:
-    """Base class for document processors"""
+    """
+    Base class for processing various document types and extracting their content.
+    
+    This class provides methods to process different file types (PDF, DOCX, TXT, etc.)
+    and extract both their text content and metadata in a consistent format.
+    
+    Attributes:
+        config (ProcessingConfig): Configuration settings for document processing
+    """
     
     def __init__(self, config: ProcessingConfig):
+        """
+        Initialize the document processor.
+        
+        Args:
+            config (ProcessingConfig): Configuration settings for document processing
+        """
         self.config = config
     
     def process_file(self, file_path: str) -> Dict[str, Any]:
-        """Process a file and extract its text content and metadata"""
+        """
+        Process a file and extract its text content and metadata.
+        
+        Args:
+            file_path (str): Path to the file to process
+            
+        Returns:
+            Dict[str, Any]: Dictionary containing:
+                - text: Extracted text content
+                - metadata: File metadata including name, path, size, etc.
+        """
+        # Get basic file information
         file_extension = os.path.splitext(file_path)[1].lower()
         file_size = os.path.getsize(file_path)
         
@@ -102,7 +165,7 @@ class DocumentProcessor:
             # Use current time if file modification time cannot be retrieved
             last_modified_iso = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
         
-        # Basic metadata for all files
+        # Collect basic metadata common to all file types
         metadata = {
             "file_name": os.path.basename(file_path),
             "file_path": file_path,
@@ -111,20 +174,19 @@ class DocumentProcessor:
             "last_modified": last_modified_iso
         }
         
-        # Get the appropriate processor for this file type
+        # Get and execute the appropriate processor for this file type
         processor = self._get_processor_for_file(file_path)
         
-        # Extract text and metadata from file
         try:
+            # Extract text and file-specific metadata
             result = processor(file_path)
             
-            # Ensure all date fields in metadata have valid format
+            # Ensure all date fields in metadata have valid ISO 8601 format
             for key, value in result["metadata"].items():
                 if isinstance(value, str) and 'date' in key.lower() and value == '':
-                    # Use the modification date as a fallback for any empty date fields
                     result["metadata"][key] = last_modified_iso
             
-            # Combine file metadata with extracted metadata
+            # Merge file-specific metadata with common metadata
             result["metadata"].update(metadata)
             
             return result
@@ -133,9 +195,18 @@ class DocumentProcessor:
             return {"text": "", "metadata": metadata}
     
     def _get_processor_for_file(self, file_path: str) -> callable:
-        """Get the appropriate processor function for a file type"""
+        """
+        Get the appropriate processor function for a file type.
+        
+        Args:
+            file_path (str): Path to the file
+            
+        Returns:
+            callable: Function to process the specific file type
+        """
         file_extension = os.path.splitext(file_path)[1].lower()
         
+        # Map file extensions to their processor functions
         processors = {
             '.pdf': self._extract_text_from_pdf,
             '.docx': self._extract_text_from_docx,
@@ -151,44 +222,61 @@ class DocumentProcessor:
             '.xls': self._extract_text_from_xlsx,
         }
         
+        # Return default processor for unknown file types
         return processors.get(file_extension, lambda f: {"text": "", "metadata": {}})
     
     def _extract_text_from_pdf(self, file_path: str) -> Dict[str, Any]:
         """
-        Extract text and metadata from PDF files with semantic awareness
+        Extract text and metadata from PDF files with semantic awareness.
+        
+        This method processes PDF files while preserving structural information:
+        - Extracts metadata from PDF properties
+        - Preserves page boundaries with subtle markers
+        - Identifies potential section headers
+        - Maintains document flow for better semantic chunking
+        
+        Args:
+            file_path (str): Path to the PDF file
+            
+        Returns:
+            Dict[str, Any]: Dictionary containing:
+                - text: Extracted text content with page markers
+                - metadata: PDF-specific metadata and properties
         """
         text = ""
         metadata = {}
         
         try:
             with open(file_path, 'rb') as file:
+                # Initialize PDF reader
                 pdf_reader = PyPDF2.PdfReader(file)
                 
-                # Extract metadata
+                # Extract PDF document properties as metadata
                 if pdf_reader.metadata:
                     for key, value in pdf_reader.metadata.items():
                         if value and isinstance(value, str):
                             metadata[key] = value
                 
-                # Extract all text as a continuous document, but preserve some page markers
+                # Process each page while preserving document structure
                 full_text = []
-                
                 for page_num in range(len(pdf_reader.pages)):
                     page = pdf_reader.pages[page_num]
                     page_text = page.extract_text()
                     
                     if page_text:
-                        # Add a subtle page marker that won't disrupt semantic chunking
+                        # Add page marker in a format that won't disrupt semantic analysis
+                        # [pg:N] format is used by the chunker to maintain page context
                         processed_text = f"{page_text.strip()}\n[pg:{page_num + 1}]\n\n"
                         full_text.append(processed_text)
-                        
-                # Store page count in metadata
+                
+                # Record total page count in metadata
                 metadata["pdf_page_count"] = len(pdf_reader.pages)
                 
-                # Join all text into a single document
+                # Combine all pages into a single text stream
                 text = "".join(full_text)
                 
-                # Extract potential section headers for better chunking
+                # Identify potential section headers for better chunking
+                # Look for patterns like "INTRODUCTION", "CHAPTER 1", etc.
                 headers = re.findall(r'\n([A-Z][A-Z\s]{3,}[A-Z])[^a-z]', text)
                 if headers:
                     metadata["potential_sections"] = headers
@@ -203,36 +291,63 @@ class DocumentProcessor:
     
     def _extract_text_from_docx(self, file_path: str) -> Dict[str, Any]:
         """
-        Extract text and metadata from DOCX files
+        Extract text and metadata from DOCX (Word) files.
+        
+        This method processes Word documents while preserving structural information:
+        - Extracts document properties (author, title, etc.)
+        - Preserves heading structure
+        - Maintains paragraph formatting
+        - Extracts table content in a readable format
+        
+        Args:
+            file_path (str): Path to the DOCX file
+            
+        Returns:
+            Dict[str, Any]: Dictionary containing:
+                - text: Extracted text content with preserved structure
+                - metadata: Document properties and metadata
         """
         text = ""
         metadata = {}
         
         try:
+            # Load the Word document
             doc = docx.Document(file_path)
             
             # Extract document properties if available
             core_properties = getattr(doc, 'core_properties', None)
             if core_properties:
-                metadata["author"] = getattr(core_properties, "author", "")
-                metadata["created"] = getattr(core_properties, "created", "")
-                metadata["last_modified_by"] = getattr(core_properties, "last_modified_by", "")
-                metadata["title"] = getattr(core_properties, "title", "")
-                metadata["subject"] = getattr(core_properties, "subject", "")
+                # Map core properties to metadata fields
+                property_mapping = {
+                    "author": "author",
+                    "created": "created",
+                    "last_modified_by": "last_modified_by",
+                    "title": "title",
+                    "subject": "subject"
+                }
+                
+                for prop_name, meta_name in property_mapping.items():
+                    value = getattr(core_properties, prop_name, "")
+                    if value:  # Only add non-empty values
+                        metadata[meta_name] = value
             
-            # Extract headings and content
+            # Process document content
             for para in doc.paragraphs:
                 if para.style and para.style.name.startswith('Heading'):
-                    # Add extra newlines for headings to improve chunking
+                    # Preserve heading structure with extra newlines
+                    # This helps the chunker identify document sections
                     text += f"\n{para.text}\n\n"
                 else:
+                    # Regular paragraphs get a single newline
                     text += para.text + "\n"
             
-            # Extract tables
+            # Process tables and convert to readable text
             for table in doc.tables:
                 for row in table.rows:
-                    row_text = " | ".join(cell.text for cell in row.cells)
+                    # Join cells with pipe separator for readability
+                    row_text = " | ".join(cell.text.strip() for cell in row.cells)
                     text += row_text + "\n"
+                # Add extra newline after each table
                 text += "\n"
                 
         except Exception as e:
@@ -245,27 +360,43 @@ class DocumentProcessor:
     
     def _extract_text_from_txt(self, file_path: str) -> Dict[str, Any]:
         """
-        Extract text from TXT files
+        Extract text from plain text files (TXT, MD, PY, JS, etc.).
+        
+        This method handles plain text files with different encodings:
+        - Attempts UTF-8 encoding first
+        - Falls back to Latin-1 if UTF-8 fails
+        - Preserves line breaks and formatting
+        
+        Args:
+            file_path (str): Path to the text file
+            
+        Returns:
+            Dict[str, Any]: Dictionary containing:
+                - text: Raw text content
+                - metadata: Basic file metadata
         """
         text = ""
+        # Get file modification time in ISO format
         last_modified = datetime.fromtimestamp(os.path.getmtime(file_path))
-        last_modified_iso = last_modified.strftime("%Y-%m-%dT%H:%M:%SZ")  # Format with 'Z' for UTC
+        last_modified_iso = last_modified.strftime("%Y-%m-%dT%H:%M:%SZ")
         
         metadata = {
             "last_modified": last_modified_iso
         }
         
         try:
+            # Try UTF-8 encoding first (most common)
             with open(file_path, 'r', encoding='utf-8') as file:
                 text = file.read()
         except UnicodeDecodeError:
             try:
+                # Fall back to Latin-1 encoding if UTF-8 fails
                 with open(file_path, 'r', encoding='latin-1') as file:
                     text = file.read()
             except Exception as e:
-                logger.error(f"Error reading TXT file {file_path}: {e}")
+                logger.error(f"Error reading text file {file_path} with Latin-1 encoding: {e}")
         except Exception as e:
-            logger.error(f"Error reading TXT file {file_path}: {e}")
+            logger.error(f"Error reading text file {file_path}: {e}")
         
         return {
             "text": text,
@@ -274,24 +405,46 @@ class DocumentProcessor:
     
     def _extract_text_from_csv(self, file_path: str) -> Dict[str, Any]:
         """
-        Extract text from CSV files
+        Extract text from CSV files.
+        
+        This method processes CSV files while preserving data structure:
+        - Extracts column headers
+        - Preserves tabular format
+        - Handles data formatting
+        
+        Args:
+            file_path (str): Path to the CSV file
+            
+        Returns:
+            Dict[str, Any]: Dictionary containing:
+                - text: Formatted text representation of CSV data
+                - metadata: CSV properties including headers
         """
         text = ""
+        # Get file modification time in ISO format
         last_modified = datetime.fromtimestamp(os.path.getmtime(file_path))
-        last_modified_iso = last_modified.strftime("%Y-%m-%dT%H:%M:%SZ")  # Format with 'Z' for UTC
+        last_modified_iso = last_modified.strftime("%Y-%m-%dT%H:%M:%SZ")
         
         metadata = {
             "last_modified": last_modified_iso
         }
         
         try:
+            # Read CSV into pandas DataFrame
             df = pd.read_csv(file_path)
-            # Get headers
+            
+            # Store column headers in metadata
             headers = df.columns.tolist()
             metadata["headers"] = ", ".join(headers)
             
-            # Convert to readable text
+            # Convert DataFrame to formatted string
+            # This preserves alignment and readability
             text = df.to_string(index=False)
+            
+            # Add basic statistics to metadata
+            metadata["row_count"] = len(df)
+            metadata["column_count"] = len(df.columns)
+            
         except Exception as e:
             logger.error(f"Error extracting text from CSV {file_path}: {e}")
         
@@ -302,15 +455,32 @@ class DocumentProcessor:
     
     def _extract_text_from_html(self, file_path: str) -> Dict[str, Any]:
         """
-        Extract text and metadata from HTML files
+        Extract text and metadata from HTML files.
+        
+        This method processes HTML documents while preserving important structure:
+        - Extracts metadata from meta tags
+        - Preserves document title
+        - Maintains heading hierarchy
+        - Removes scripts and styles
+        - Preserves content structure
+        
+        Args:
+            file_path (str): Path to the HTML file
+            
+        Returns:
+            Dict[str, Any]: Dictionary containing:
+                - text: Extracted text content with preserved structure
+                - metadata: HTML metadata and properties
         """
         text = ""
         metadata = {}
         
         try:
+            # Read HTML content with UTF-8 encoding
             with open(file_path, 'r', encoding='utf-8') as file:
                 html_content = file.read()
             
+            # Parse HTML with BeautifulSoup
             soup = BeautifulSoup(html_content, 'html.parser')
             
             # Extract metadata from meta tags
@@ -318,17 +488,18 @@ class DocumentProcessor:
                 if meta.get('name') and meta.get('content'):
                     metadata[meta['name']] = meta['content']
             
-            # Extract title
+            # Extract and process title
             title = soup.find('title')
             if title:
                 metadata['title'] = title.text
                 text += f"Title: {title.text}\n\n"
             
-            # Extract headings and content with structure
+            # Process headings and their associated content
             for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                # Add heading with proper spacing
                 text += f"\n{heading.text.strip()}\n\n"
                 
-                # Get content until the next heading
+                # Get content until next heading
                 for sibling in heading.next_siblings:
                     if sibling.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
                         break
@@ -337,12 +508,16 @@ class DocumentProcessor:
                         if content:
                             text += content + "\n"
             
-            # Fallback: if we didn't get much text, extract all text
+            # If we didn't get much text from the structured approach,
+            # fall back to extracting all text content
             if len(text) < 200:
-                # Remove scripts and styles
-                for script in soup(["script", "style"]):
-                    script.extract()
+                # Remove scripts and styles first
+                for element in soup(['script', 'style']):
+                    element.extract()
+                
+                # Get remaining text with proper spacing
                 text = soup.get_text(separator="\n")
+                
         except Exception as e:
             logger.error(f"Error extracting text from HTML {file_path}: {e}")
         
@@ -353,34 +528,66 @@ class DocumentProcessor:
     
     def _extract_text_from_pptx(self, file_path: str) -> Dict[str, Any]:
         """
-        Extract text from PowerPoint PPTX files
+        Extract text from PowerPoint (PPTX) files.
+        
+        This method processes PowerPoint presentations while preserving structure:
+        - Extracts presentation metadata
+        - Maintains slide order and numbering
+        - Preserves slide titles and content
+        - Handles text from shapes and tables
+        
+        Args:
+            file_path (str): Path to the PPTX file
+            
+        Returns:
+            Dict[str, Any]: Dictionary containing:
+                - text: Extracted text with slide structure preserved
+                - metadata: Presentation properties and statistics
         """
         text = ""
         metadata = {}
         
         try:
+            # Load PowerPoint presentation
             prs = pptx.Presentation(file_path)
             
-            # Extract metadata if available
+            # Extract presentation properties
             if hasattr(prs.core_properties, 'author'):
                 metadata["author"] = prs.core_properties.author
             if hasattr(prs.core_properties, 'title'):
                 metadata["title"] = prs.core_properties.title
             
-            # Extract text from slides
-            for i, slide in enumerate(prs.slides):
-                text += f"\n--- Slide {i+1} ---\n"
+            # Store presentation statistics
+            metadata["slide_count"] = len(prs.slides)
+            
+            # Process each slide
+            for i, slide in enumerate(prs.slides, 1):
+                # Add slide marker
+                text += f"\n=== Slide {i} ===\n"
                 
                 # Extract slide title if available
                 if slide.shapes.title:
                     text += f"Title: {slide.shapes.title.text}\n\n"
                 
-                # Extract text from all shapes in the slide
+                # Process all shapes in the slide
                 for shape in slide.shapes:
                     if hasattr(shape, "text") and shape.text:
-                        text += shape.text + "\n"
+                        # Clean and add shape text
+                        shape_text = shape.text.strip()
+                        if shape_text:
+                            text += shape_text + "\n"
                 
+                # Add extra newline between slides
                 text += "\n"
+            
+            # Add presentation summary to metadata
+            metadata["has_speaker_notes"] = any(
+                shape.has_text_frame
+                for slide in prs.slides
+                for shape in slide.shapes
+                if shape.shape_type == 19  # MSO_SHAPE_TYPE.NOTES
+            )
+            
         except Exception as e:
             logger.error(f"Error extracting text from PPTX {file_path}: {e}")
         
@@ -391,24 +598,65 @@ class DocumentProcessor:
     
     def _extract_text_from_xlsx(self, file_path: str) -> Dict[str, Any]:
         """
-        Extract text from Excel XLSX files
+        Extract text from Excel (XLSX/XLS) files.
+        
+        This method processes Excel workbooks while preserving structure:
+        - Processes all sheets in the workbook
+        - Preserves sheet names and order
+        - Maintains tabular data format
+        - Handles cell formatting and alignment
+        
+        Args:
+            file_path (str): Path to the Excel file
+            
+        Returns:
+            Dict[str, Any]: Dictionary containing:
+                - text: Formatted text representation of all sheets
+                - metadata: Workbook properties and statistics
         """
         text = ""
         metadata = {}
         
         try:
-            # Use pandas to read Excel
+            # Open Excel workbook
             xlsx = pd.ExcelFile(file_path)
-            metadata["sheet_names"] = ", ".join(xlsx.sheet_names)
+            
+            # Store sheet information in metadata
+            sheet_names = xlsx.sheet_names
+            metadata["sheet_names"] = ", ".join(sheet_names)
+            metadata["sheet_count"] = len(sheet_names)
             
             # Process each sheet
-            for sheet_name in xlsx.sheet_names:
+            total_rows = 0
+            sheet_stats = []
+            
+            for sheet_name in sheet_names:
+                # Read sheet into DataFrame
                 df = pd.read_excel(xlsx, sheet_name)
                 
-                text += f"\n--- Sheet: {sheet_name} ---\n"
-                text += df.to_string(index=False) + "\n\n"
+                # Add sheet header
+                text += f"\n{'='*20} Sheet: {sheet_name} {'='*20}\n\n"
+                
+                # Convert sheet data to formatted string
+                # This preserves alignment and readability
+                if not df.empty:
+                    text += df.to_string(index=False) + "\n\n"
+                    
+                    # Collect sheet statistics
+                    total_rows += len(df)
+                    sheet_stats.append({
+                        "name": sheet_name,
+                        "rows": len(df),
+                        "columns": len(df.columns),
+                        "headers": ", ".join(df.columns.tolist())
+                    })
+            
+            # Add workbook statistics to metadata
+            metadata["total_rows"] = total_rows
+            metadata["sheet_statistics"] = sheet_stats
+            
         except Exception as e:
-            logger.error(f"Error extracting text from XLSX {file_path}: {e}")
+            logger.error(f"Error extracting text from Excel file {file_path}: {e}")
         
         return {
             "text": text,
