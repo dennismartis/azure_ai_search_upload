@@ -664,110 +664,170 @@ class DocumentProcessor:
         }
 
 class TextChunker:
-    """Class for chunking text into manageable pieces"""
+    """
+    Intelligent text chunking system for document processing.
+    
+    This class splits large text documents into semantically meaningful chunks
+    while respecting document structure. It uses different chunking strategies
+    based on content type (PDF, code, JSON, Markdown, etc.) to ensure chunks
+    maintain context and readability.
+    
+    Attributes:
+        chunk_size (int): Maximum size of each chunk in characters
+        chunk_overlap (int): Number of characters to overlap between chunks
+    """
     
     def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 100):
+        """
+        Initialize the text chunker.
+        
+        Args:
+            chunk_size (int): Maximum size of each chunk in characters
+            chunk_overlap (int): Number of characters to overlap between chunks
+        """
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
     
     def chunk_text(self, text: str) -> List[str]:
         """
-        Split text into chunks with specified size and overlap, respecting content structure
+        Split text into chunks with specified size and overlap, respecting content structure.
+        
+        This method intelligently detects the content type and applies the most appropriate
+        chunking strategy:
+        - PDF documents: Chunks by sections and page markers
+        - Code: Chunks by function/class boundaries
+        - JSON: Chunks by object structure
+        - Markdown: Chunks by headings
+        - Regular text: Chunks by paragraphs and sentences
+        
+        Args:
+            text (str): The text content to chunk
+            
+        Returns:
+            List[str]: List of text chunks with appropriate overlap
         """
-        # If the text is short enough, return it as a single chunk
+        # For very short texts, return as a single chunk
         if len(text) <= self.chunk_size:
             return [text.strip()]
         
         chunks = []
         
-        # Try to detect if this is code or structured data
+        # Detect content type based on patterns
         is_code = bool(re.search(r'(def |class |function |import |from |var |const |let |public |private |#include)', text))
         is_json = bool(text.strip().startswith('{') and text.strip().endswith('}'))
         is_markdown = bool(re.search(r'^#{1,6} |\n#{1,6} |```|\*\*|__|\[.+\]\(.+\)', text))
-        
-        # Check if this appears to be a PDF with potential section headers
         has_pdf_markers = '[pg:' in text and re.search(r'\[pg:\d+\]', text)
         
+        # === PDF DOCUMENT CHUNKING STRATEGY ===
         if has_pdf_markers:
-            # Try to find section markers or headers for better chunking of PDFs
-            # Common patterns in PDFs include: ALL CAPS HEADINGS, Chapter X, Section X.X, etc.
-            sections = []
+            chunks = self._chunk_pdf_document(text)
+            if chunks:
+                return chunks
+        
+        # === JSON DOCUMENT CHUNKING STRATEGY ===
+        if is_json:
+            chunks = self._chunk_json_document(text)
+            if chunks:
+                return chunks
+        
+        # === CODE DOCUMENT CHUNKING STRATEGY ===
+        if is_code:
+            chunks = self._chunk_code_document(text)
+            if chunks:
+                return chunks
+        
+        # === MARKDOWN DOCUMENT CHUNKING STRATEGY ===
+        if is_markdown:
+            chunks = self._chunk_markdown_document(text)
+            if chunks:
+                return chunks
+        
+        # === DEFAULT TEXT CHUNKING STRATEGY ===
+        # For regular text, chunk by paragraphs and sentences
+        return self._chunk_regular_text(text)
+    
+    def remove_duplicate_chunks(self, chunks: List[str]) -> List[str]:
+        """
+        Remove duplicate or near-duplicate chunks from the list.
+        
+        This method identifies and removes chunks that are exact duplicates or have
+        very high similarity to other chunks in the list, reducing redundancy in the
+        processed documents.
+        
+        Args:
+            chunks (List[str]): List of text chunks to deduplicate
             
-            # Check for various heading patterns
-            heading_patterns = [
-                r'\n([A-Z][A-Z\s]{3,}[A-Z])[^a-z]',  # ALL CAPS HEADINGS
-                r'\n(Chapter\s+\d+[.:]\s*\w+)',       # Chapter headings
-                r'\n((?:\d+\.){1,3}\s*\w+)',          # Section numbers like 1.2.3
-                r'\n([IVX]+\.\s+\w+)',                # Roman numeral sections
-                r'\b(\d+\.\d+\s+[A-Z][a-z]+)'         # Numbered headings like "1.2 Introduction"
-            ]
+        Returns:
+            List[str]: Deduplicated list of text chunks
+        """
+        if not chunks:
+            return []
             
-            # Try each pattern to find potential section breaks
-            for pattern in heading_patterns:
-                matches = re.finditer(pattern, text)
-                for match in matches:
-                    # Get position of the heading
-                    pos = match.start()
-                    sections.append(pos)
+        # For exact duplicates, use a set to remove them
+        unique_chunks = []
+        seen_chunks = set()
+        
+        for chunk in chunks:
+            # Create a normalized version for comparison (lowercase, whitespace normalized)
+            normalized = re.sub(r'\s+', ' ', chunk.lower().strip())
             
-            # If we found sections, use them for chunking
-            if sections:
-                sections.sort()
-                start_pos = 0
+            # Skip if we've seen this exact chunk before
+            if normalized in seen_chunks:
+                continue
                 
-                # Create chunks based on section boundaries
-                for section_pos in sections:
-                    # If adding this section would exceed chunk size, break here
-                    if section_pos - start_pos > self.chunk_size and start_pos < section_pos:
-                        chunk_text = text[start_pos:section_pos].strip()
-                        if chunk_text:
-                            chunks.append(chunk_text)
-                        start_pos = section_pos
-                
-                # Add the last section
-                if start_pos < len(text):
-                    chunk_text = text[start_pos:].strip()
+            seen_chunks.add(normalized)
+            unique_chunks.append(chunk)
+            
+        return unique_chunks
+    
+    def _chunk_pdf_document(self, text: str) -> List[str]:
+        """
+        Chunk PDF documents using section headers and page markers.
+        
+        Args:
+            text (str): PDF text content with page markers
+            
+        Returns:
+            List[str]: Chunked PDF content or empty list if chunking fails
+        """
+        chunks = []
+        
+        # Try to find section markers or headers for better chunking
+        # Common patterns: ALL CAPS HEADINGS, Chapter X, Section X.X, etc.
+        sections = []
+        
+        # Define patterns for different heading styles in PDFs
+        heading_patterns = [
+            r'\n([A-Z][A-Z\s]{3,}[A-Z])[^a-z]',  # ALL CAPS HEADINGS
+            r'\n(Chapter\s+\d+[.:]\s*\w+)',       # Chapter headings
+            r'\n((?:\d+\.){1,3}\s*\w+)',          # Section numbers like 1.2.3
+            r'\n([IVX]+\.\s+\w+)',                # Roman numeral sections
+            r'\b(\d+\.\d+\s+[A-Z][a-z]+)'         # Numbered headings like "1.2 Introduction"
+        ]
+        
+        # Find all potential section boundaries
+        for pattern in heading_patterns:
+            matches = re.finditer(pattern, text)
+            for match in matches:
+                sections.append(match.start())
+        
+        # If we found sections, use them as chunk boundaries
+        if sections:
+            sections.sort()
+            start_pos = 0
+            
+            # Create chunks based on section boundaries
+            for section_pos in sections:
+                # Only break if this would create a reasonably sized chunk
+                if section_pos - start_pos > self.chunk_size and start_pos < section_pos:
+                    chunk_text = text[start_pos:section_pos].strip()
                     if chunk_text:
                         chunks.append(chunk_text)
-                
-                # If we successfully created chunks, return them
-                if chunks:
-                    return chunks
+                    start_pos = section_pos
             
-            # If no clear sections were found, fall back to chunking by paragraphs
-            paragraphs = re.split(r'\n\s*\n', text)
-            current_chunk = []
-            current_size = 0
-            
-            for para in paragraphs:
-                para_size = len(para) + 2  # +2 for the newlines
-                
-                # If this paragraph would exceed the chunk size and we already have content,
-                # complete the current chunk and start a new one
-                if current_size + para_size > self.chunk_size and current_chunk:
-                    chunk_text = "\n\n".join(current_chunk).strip()
-                    if chunk_text:
-                        chunks.append(chunk_text)
-                    
-                    # Start new chunk with overlap by including some previous paragraphs
-                    overlap_size = 0
-                    overlap_paras = []
-                    for prev_para in reversed(current_chunk):
-                        if overlap_size + len(prev_para) + 2 <= self.chunk_overlap:
-                            overlap_paras.insert(0, prev_para)
-                            overlap_size += len(prev_para) + 2
-                        else:
-                            break
-                    
-                    current_chunk = overlap_paras
-                    current_size = overlap_size
-                
-                current_chunk.append(para)
-                current_size += para_size
-            
-            # Add the last chunk if it has content
-            if current_chunk:
-                chunk_text = "\n\n".join(current_chunk).strip()
+            # Add the final section
+            if start_pos < len(text):
+                chunk_text = text[start_pos:].strip()
                 if chunk_text:
                     chunks.append(chunk_text)
             
@@ -775,77 +835,7 @@ class TextChunker:
             if chunks:
                 return chunks
         
-        if is_json:
-            # For JSON, try to split at the top-level objects
-            try:
-                data = json.loads(text)
-                if isinstance(data, list) and len(data) > 1:
-                    # If it's a list of objects, split by list items
-                    for i in range(0, len(data), max(1, self.chunk_size // 500)):
-                        subset = data[i:min(i + max(1, self.chunk_size // 500), len(data))]
-                        chunks.append(json.dumps(subset, indent=2))
-                    return chunks
-                elif isinstance(data, dict):
-                    # For large dictionaries, split by top-level keys
-                    keys = list(data.keys())
-                    for i in range(0, len(keys), max(1, self.chunk_size // 500)):
-                        subset_keys = keys[i:min(i + max(1, self.chunk_size // 500), len(keys))]
-                        subset = {k: data[k] for k in subset_keys}
-                        chunks.append(json.dumps(subset, indent=2))
-                    return chunks
-            except:
-                pass  # If JSON parsing fails, fall back to regular chunking
-        
-        if is_code:
-            # For code, try to split at function boundaries
-            lines = text.split('\n')
-            current_chunk = []
-            current_length = 0
-            
-            for line in lines:
-                line_with_newline = line + '\n'
-                line_length = len(line_with_newline)
-                
-                # If adding this line would exceed chunk size and we already have content
-                if current_length + line_length > self.chunk_size and current_chunk:
-                    chunks.append(''.join(current_chunk))
-                    # Keep some context for the next chunk (overlap)
-                    overlap_lines = current_chunk[-min(len(current_chunk), self.chunk_overlap // 20):]
-                    current_chunk = overlap_lines
-                    current_length = sum(len(l) + 1 for l in overlap_lines)
-                
-                current_chunk.append(line_with_newline)
-                current_length += line_length
-            
-            if current_chunk:
-                chunks.append(''.join(current_chunk))
-            
-            return chunks
-        
-        if is_markdown:
-            # For markdown, try to split at heading boundaries
-            sections = re.split(r'(\n#{1,6} )', text)
-            current_chunk = []
-            current_length = 0
-            
-            for i in range(len(sections)):
-                section = sections[i]
-                section_length = len(section)
-                
-                if current_length + section_length > self.chunk_size and current_chunk:
-                    chunks.append(''.join(current_chunk))
-                    current_chunk = []
-                    current_length = 0
-                
-                current_chunk.append(section)
-                current_length += section_length
-            
-            if current_chunk:
-                chunks.append(''.join(current_chunk))
-            
-            return chunks
-        
-        # Default chunking for regular text - use paragraphs and sentences
+        # Fallback: chunk by paragraphs if section detection failed
         paragraphs = re.split(r'\n\s*\n', text)
         current_chunk = []
         current_size = 0
@@ -853,42 +843,13 @@ class TextChunker:
         for para in paragraphs:
             para_size = len(para) + 2  # +2 for the newlines
             
-            # If this paragraph would exceed the chunk size on its own, split it by sentences
-            if para_size > self.chunk_size:
-                # Process this large paragraph separately
-                if current_chunk:
-                    # First, complete the current chunk
-                    chunks.append("\n\n".join(current_chunk).strip())
-                    current_chunk = []
-                    current_size = 0
-                
-                # Split this large paragraph by sentences
-                sentences = re.split(r'(?<=[.!?])\s+', para)
-                current_sentence_chunk = []
-                current_sentence_size = 0
-                
-                for sentence in sentences:
-                    sentence_size = len(sentence) + 1  # +1 for the space
-                    
-                    if current_sentence_size + sentence_size > self.chunk_size and current_sentence_chunk:
-                        chunks.append(" ".join(current_sentence_chunk).strip())
-                        current_sentence_chunk = []
-                        current_sentence_size = 0
-                    
-                    current_sentence_chunk.append(sentence)
-                    current_sentence_size += sentence_size
-                
-                if current_sentence_chunk:
-                    chunks.append(" ".join(current_sentence_chunk).strip())
-                
-                continue  # Skip adding this paragraph to the regular chunks
-            
-            # If adding this paragraph would exceed the chunk size and we already have content,
-            # complete the current chunk and start a new one
+            # If adding this paragraph would exceed chunk size, complete current chunk
             if current_size + para_size > self.chunk_size and current_chunk:
-                chunks.append("\n\n".join(current_chunk).strip())
+                chunk_text = "\n\n".join(current_chunk).strip()
+                if chunk_text:
+                    chunks.append(chunk_text)
                 
-                # Start new chunk with overlap by including some previous paragraphs
+                # Create overlap with previous paragraphs
                 overlap_size = 0
                 overlap_paras = []
                 for prev_para in reversed(current_chunk):
@@ -904,90 +865,267 @@ class TextChunker:
             current_chunk.append(para)
             current_size += para_size
         
-        # Add the last chunk if it has content
+        # Add the final chunk
+        if current_chunk:
+            chunk_text = "\n\n".join(current_chunk).strip()
+            if chunk_text:
+                chunks.append(chunk_text)
+        
+        return chunks
+    
+    def _chunk_json_document(self, text: str) -> List[str]:
+        """
+        Chunk JSON documents by object structure.
+        
+        Args:
+            text (str): JSON text content
+            
+        Returns:
+            List[str]: Chunked JSON content or empty list if chunking fails
+        """
+        chunks = []
+        
+        try:
+            # Parse the JSON to understand its structure
+            data = json.loads(text)
+            
+            # Handle arrays of objects
+            if isinstance(data, list) and len(data) > 1:
+                # Calculate how many items to include per chunk
+                items_per_chunk = max(1, self.chunk_size // 500)
+                
+                # Split the list into chunks
+                for i in range(0, len(data), items_per_chunk):
+                    subset = data[i:min(i + items_per_chunk, len(data))]
+                    chunks.append(json.dumps(subset, indent=2))
+                return chunks
+                
+            # Handle dictionary objects
+            elif isinstance(data, dict):
+                # Split large dictionaries by top-level keys
+                keys = list(data.keys())
+                keys_per_chunk = max(1, self.chunk_size // 500)
+                
+                for i in range(0, len(keys), keys_per_chunk):
+                    subset_keys = keys[i:min(i + keys_per_chunk, len(keys))]
+                    subset = {k: data[k] for k in subset_keys}
+                    chunks.append(json.dumps(subset, indent=2))
+                return chunks
+        except:
+            # If JSON parsing fails, return empty list to fall back to default chunking
+            return []
+        
+        return chunks
+    
+    def _chunk_code_document(self, text: str) -> List[str]:
+        """
+        Chunk code documents by respecting function and class boundaries.
+        
+        Args:
+            text (str): Code text content
+            
+        Returns:
+            List[str]: Chunked code content
+        """
+        chunks = []
+        lines = text.split('\n')
+        current_chunk = []
+        current_length = 0
+        
+        for line in lines:
+            line_with_newline = line + '\n'
+            line_length = len(line_with_newline)
+            
+            # If adding this line would exceed chunk size, complete current chunk
+            if current_length + line_length > self.chunk_size and current_chunk:
+                chunks.append(''.join(current_chunk))
+                
+                # Create overlap with previous lines for context
+                # Use fewer lines for code overlap to maintain function context
+                overlap_lines = current_chunk[-min(len(current_chunk), self.chunk_overlap // 20):]
+                current_chunk = overlap_lines
+                current_length = sum(len(l) + 1 for l in overlap_lines)
+            
+            current_chunk.append(line_with_newline)
+            current_length += line_length
+        
+        # Add the final chunk
+        if current_chunk:
+            chunks.append(''.join(current_chunk))
+        
+        return chunks
+    
+    def _chunk_markdown_document(self, text: str) -> List[str]:
+        """
+        Chunk markdown documents by heading boundaries.
+        
+        Args:
+            text (str): Markdown text content
+            
+        Returns:
+            List[str]: Chunked markdown content
+        """
+        chunks = []
+        
+        # Split at markdown headings (# Heading)
+        sections = re.split(r'(\n#{1,6} )', text)
+        current_chunk = []
+        current_length = 0
+        
+        for i in range(len(sections)):
+            section = sections[i]
+            section_length = len(section)
+            
+            # If adding this section would exceed chunk size, complete current chunk
+            if current_length + section_length > self.chunk_size and current_chunk:
+                chunks.append(''.join(current_chunk))
+                current_chunk = []
+                current_length = 0
+            
+            current_chunk.append(section)
+            current_length += section_length
+        
+        # Add the final chunk
+        if current_chunk:
+            chunks.append(''.join(current_chunk))
+        
+        return chunks
+    
+    def _chunk_regular_text(self, text: str) -> List[str]:
+        """
+        Default chunking strategy for regular text using paragraphs and sentences.
+        
+        Args:
+            text (str): Regular text content
+            
+        Returns:
+            List[str]: Chunked text content
+        """
+        chunks = []
+        paragraphs = re.split(r'\n\s*\n', text)
+        current_chunk = []
+        current_size = 0
+        
+        for para in paragraphs:
+            para_size = len(para) + 2  # +2 for the newlines
+            
+            # Handle paragraphs that are larger than chunk_size
+            if para_size > self.chunk_size:
+                # Complete the current chunk first
+                if current_chunk:
+                    chunks.append("\n\n".join(current_chunk).strip())
+                    current_chunk = []
+                    current_size = 0
+                
+                # Split this large paragraph by sentences
+                sentences = re.split(r'(?<=[.!?])\s+', para)
+                current_sentence_chunk = []
+                current_sentence_size = 0
+                
+                for sentence in sentences:
+                    sentence_size = len(sentence) + 1  # +1 for the space
+                    
+                    # If adding this sentence would exceed chunk size, complete current chunk
+                    if current_sentence_size + sentence_size > self.chunk_size and current_sentence_chunk:
+                        chunks.append(" ".join(current_sentence_chunk).strip())
+                        current_sentence_chunk = []
+                        current_sentence_size = 0
+                    
+                    current_sentence_chunk.append(sentence)
+                    current_sentence_size += sentence_size
+                
+                # Add the final sentence chunk
+                if current_sentence_chunk:
+                    chunks.append(" ".join(current_sentence_chunk).strip())
+                
+                # Skip adding this paragraph to regular chunks since we've handled it
+                continue
+            
+            # If adding this paragraph would exceed chunk size, complete current chunk
+            if current_size + para_size > self.chunk_size and current_chunk:
+                chunks.append("\n\n".join(current_chunk).strip())
+                
+                # Create overlap with previous paragraphs
+                overlap_size = 0
+                overlap_paras = []
+                for prev_para in reversed(current_chunk):
+                    if overlap_size + len(prev_para) + 2 <= self.chunk_overlap:
+                        overlap_paras.insert(0, prev_para)
+                        overlap_size += len(prev_para) + 2
+                    else:
+                        break
+                
+                current_chunk = overlap_paras
+                current_size = overlap_size
+            
+            current_chunk.append(para)
+            current_size += para_size
+        
+        # Add the final chunk
         if current_chunk:
             chunks.append("\n\n".join(current_chunk).strip())
         
         return chunks
-    
-    def chunk_pdf_by_pages(self, pdf_data: Dict[str, Any]) -> List[str]:
-        """
-        Chunk PDF content by grouping pages together until chunk_size is approached
-        This avoids splitting in the middle of pages and provides cleaner chunks
-        """
-        pages = pdf_data["metadata"].get("pdf_original_pages", [])
-        if not pages:
-            logger.warning("No PDF pages found for page-based chunking")
-            return [pdf_data["text"]]  # Return the full text as one chunk if no pages
-        
-        chunks = []
-        current_chunk = []
-        current_size = 0
-        
-        for page in pages:
-            page_size = len(page)
-            
-            # If adding this page would exceed chunk_size and we already have content,
-            # complete the current chunk and start a new one
-            if current_size + page_size > self.chunk_size and current_chunk:
-                chunks.append("\n\n".join(current_chunk))
-                current_chunk = []
-                current_size = 0
-            
-            # Add the page to the current chunk
-            current_chunk.append(page)
-            current_size += page_size
-        
-        # Add any remaining pages
-        if current_chunk:
-            chunks.append("\n\n".join(current_chunk))
-        
-        return chunks
-    
-    def remove_duplicate_chunks(self, chunks: List[str]) -> List[str]:
-        """
-        Remove chunks that are too similar to each other
-        """
-        unique_chunks = []
-        chunk_hashes = set()
-        
-        for chunk in chunks:
-            # Create a simple hash of the first 100 chars to detect very similar chunks
-            chunk_start = chunk[:100].strip().lower()
-            chunk_hash = hashlib.md5(chunk_start.encode()).hexdigest()
-            
-            # Only add chunk if we haven't seen this beginning before
-            if chunk_hash not in chunk_hashes:
-                unique_chunks.append(chunk)
-                chunk_hashes.add(chunk_hash)
-        
-        return unique_chunks
 
 class EmbeddingGenerator:
-    """Class for generating text embeddings"""
+    """
+    Generates vector embeddings for text using Azure OpenAI.
+    
+    This class handles the generation of vector embeddings for text content
+    using Azure OpenAI's embedding models. These embeddings are used for
+    vector search capabilities in Azure AI Search.
+    
+    Attributes:
+        config (OpenAIConfig): Configuration for Azure OpenAI service
+    """
     
     def __init__(self, config: OpenAIConfig):
+        """
+        Initialize the embedding generator.
+        
+        Args:
+            config (OpenAIConfig): Configuration settings for Azure OpenAI
+        """
         self.config = config
     
     def generate_embeddings(self, text: str) -> List[float]:
         """
-        Generate embeddings using Azure OpenAI service
+        Generate vector embeddings for text using Azure OpenAI.
+        
+        This method calls the Azure OpenAI API to generate embeddings
+        for the provided text. It handles:
+        - Skipping embedding generation if configured to do so
+        - Truncating text to fit within token limits
+        - Error handling and response parsing
+        - Different API response formats
+        
+        Args:
+            text (str): The text to generate embeddings for
+            
+        Returns:
+            List[float]: Vector embeddings as a list of floating point values,
+                         or empty list if embedding generation fails or is skipped
         """
+        # Skip embedding generation if configured to do so or if credentials are missing
         if self.config.skip_embeddings or not self.config.endpoint or not self.config.api_key:
             logger.warning("Skipping embeddings generation due to configuration")
             return []
         
         try:
+            # Set up API request headers
             headers = {
                 "Content-Type": "application/json",
                 "api-key": self.config.api_key
             }
             
-            # Truncate text if it's too long (token limit for embeddings)
+            # Truncate text if it exceeds the model's token limit
+            # Most embedding models have an 8K token limit
             max_length = 8000  # Approximate token limit
             if len(text) > max_length:
+                logger.debug(f"Truncating text from {len(text)} to {max_length} characters for embedding")
                 text = text[:max_length]
             
+            # Prepare request body
             body = {
                 "input": text,
                 "model": self.config.deployment_name
@@ -997,71 +1135,102 @@ class EmbeddingGenerator:
             api_version = "2023-12-01-preview"
             url = f"{self.config.endpoint}/openai/deployments/{self.config.deployment_name}/embeddings?api-version={api_version}"
             
-            logger.debug(f"Calling embedding API at {url}")
+            # Call the Azure OpenAI API
+            logger.debug(f"Calling embedding API for text of length {len(text)}")
             response = requests.post(url, headers=headers, json=body)
             response.raise_for_status()
             
+            # Parse the response
             result = response.json()
             
-            # Check for the correct format in the response
+            # Handle different response formats based on API version
             if "data" in result and len(result["data"]) > 0 and "embedding" in result["data"][0]:
+                # Standard OpenAI API format
                 embeddings = result["data"][0]["embedding"]
+                logger.debug(f"Successfully generated embedding with {len(embeddings)} dimensions")
                 return embeddings
+            elif "embedding" in result:
+                # Alternative format used in some Azure OpenAI API versions
+                logger.debug(f"Successfully generated embedding with {len(result['embedding'])} dimensions (alternative format)")
+                return result["embedding"]
             else:
-                # Try alternative format that might be used in some API versions
-                if "embedding" in result:
-                    return result["embedding"]
+                # Unexpected response format
                 logger.error(f"Unexpected embeddings response format: {result}")
                 return []
+                
         except Exception as e:
             logger.error(f"Error generating embeddings with Azure OpenAI: {e}")
-            # Return empty embeddings in case of error
             return []
 
 class AzureSearchIndexManager:
-    """Class for managing Azure AI Search indexes"""
+    """
+    Manages Azure AI Search index creation and configuration.
+    
+    This class handles the creation, update, and configuration of Azure AI Search indexes,
+    including support for vector search and semantic search capabilities. It uses both
+    the Azure SDK and direct REST API calls when necessary to configure advanced features.
+    
+    Attributes:
+        config (AzureSearchConfig): Configuration for Azure AI Search
+        credential (AzureKeyCredential): Authentication credential for Azure
+        index_client (SearchIndexClient): Client for managing search indexes
+    """
     
     def __init__(self, config: AzureSearchConfig):
+        """
+        Initialize the Azure AI Search index manager.
+        
+        Args:
+            config (AzureSearchConfig): Configuration settings for Azure AI Search
+        """
         self.config = config
         self.credential = AzureKeyCredential(config.api_key)
         self.index_client = SearchIndexClient(endpoint=config.endpoint, credential=self.credential)
     
     def create_or_update_index(self) -> None:
         """
-        Create or update an Azure AI Search index
+        Create or update an Azure AI Search index based on configuration.
+        
+        This method handles:
+        - Deleting existing index if force_recreate is enabled
+        - Creating vector search enabled indexes using REST API
+        - Creating semantic search enabled indexes
+        - Falling back to SDK methods when appropriate
+        
+        Raises:
+            Exception: Logs errors but continues execution with existing index
         """
+        # Delete existing index if force recreation is enabled
         if self.config.force_recreate:
             self._delete_index_if_exists()
         
         try:
-            # Build the index definition
+            # Build the index definition based on configuration
             index = self._build_index_definition()
             
-            # For vector search, the index is already created in _build_index_definition via REST API
-            # We just need to log that it's done and return
+            # For vector search, the index is created via REST API in _build_index_definition
             if self.config.vector_search:
-                logger.info(f"Index {self.config.index_name} already created via REST API in _build_index_definition")
+                logger.info(f"Index {self.config.index_name} created via REST API in _build_index_definition")
                 return
             
-            # For non-vector search, we can use the SDK approach
+            # For non-vector search, use the SDK approach
             # Log the index configuration for debugging
             index_dict = index.as_dict()
             logger.info(f"Creating index with configuration: {json.dumps(index_dict, indent=2)[:500]}...")
             
-            # Check if semantic settings are present
+            # Verify semantic settings are present if enabled
             if "semantic" in index_dict:
                 logger.info("Semantic settings are present in the index configuration")
             else:
                 logger.warning("Semantic settings are NOT present in the index configuration")
                 
-                # If semantic search is enabled but settings are not in the serialized index,
-                # we need to manually add them using REST API
+                # If semantic search is enabled but settings are missing, use REST API
                 if self.config.semantic_search:
                     logger.warning("Using REST API method to create index with semantic settings")
                     self._create_index_with_rest_api(semantic_only=True)
                     return
             
-            # Use the SDK to create the index if we're not using vector search
+            # Use the SDK to create or update the index
             result = self.index_client.create_or_update_index(index)
             logger.info(f"Index {self.config.index_name} created or updated successfully with SDK")
         except Exception as e:
@@ -1069,13 +1238,25 @@ class AzureSearchIndexManager:
             logger.info("Continuing with existing index configuration...")
     
     def _create_index_with_rest_api(self, semantic_only=False) -> None:
-        """Create index using REST API for when SDK limitations need to be bypassed"""
-        # This is a placeholder - the actual REST API call is now in _build_index_definition
-        # Only used for back-compatibility
+        """
+        Create index using REST API when SDK limitations need to be bypassed.
+        
+        This is a placeholder method as the actual REST API call is implemented
+        in the _build_index_definition method. Kept for backward compatibility.
+        
+        Args:
+            semantic_only (bool): Whether to only add semantic settings
+        """
+        # This is a placeholder - the actual REST API call is in _build_index_definition
         pass
     
     def _delete_index_if_exists(self) -> None:
-        """Delete the index if it exists"""
+        """
+        Delete the search index if it exists.
+        
+        This method attempts to delete the configured index and logs the result.
+        It handles the case where the index doesn't exist gracefully.
+        """
         try:
             logger.info(f"Attempting to delete index {self.config.index_name} for recreation")
             self.index_client.delete_index(self.config.index_name)
@@ -1085,9 +1266,21 @@ class AzureSearchIndexManager:
     
     def _build_index_definition(self) -> SearchIndex:
         """
-        Build the search index definition
+        Build the search index definition based on configuration.
+        
+        This method creates the appropriate index definition with:
+        - Standard fields for document metadata
+        - Vector search configuration if enabled
+        - Semantic search configuration if enabled
+        
+        For vector search, it uses direct REST API calls to configure
+        vector search profiles and algorithms that aren't fully supported
+        in the SDK.
+        
+        Returns:
+            SearchIndex: The configured search index definition
         """
-        # Import basic models
+        # Import required models
         from azure.search.documents.indexes.models import (
             SearchableField, 
             SimpleField, 
@@ -1095,6 +1288,7 @@ class AzureSearchIndexManager:
             SearchIndex
         )
         
+        # Define standard fields for the index
         fields = [
             SimpleField(name="id", type=SearchFieldDataType.String, key=True),
             SearchableField(name="content", type=SearchFieldDataType.String, analyzer_name="en.microsoft"),
@@ -1370,13 +1564,32 @@ class AzureSearchIndexManager:
             return index
 
 class DocumentUploader:
-    """Class for uploading documents to Azure AI Search"""
+    """
+    Handles the uploading of document chunks to an Azure AI Search index.
+    
+    This class manages the process of uploading processed document chunks to an Azure AI Search
+    index, handling batch processing, error recovery, and validation of document fields.
+    It supports both standard search and vector search configurations.
+    
+    Attributes:
+        azure_config (AzureSearchConfig): Configuration for Azure AI Search service.
+        openai_config (OpenAIConfig): Configuration for OpenAI API.
+        credential (AzureKeyCredential): Authentication credential for Azure services.
+        search_client (SearchClient): Client for interacting with the Azure AI Search index.
+    """
     
     def __init__(
         self, 
         azure_config: AzureSearchConfig,
         openai_config: OpenAIConfig
     ):
+        """
+        Initialize the DocumentUploader with Azure and OpenAI configurations.
+        
+        Args:
+            azure_config (AzureSearchConfig): Configuration for Azure AI Search service.
+            openai_config (OpenAIConfig): Configuration for OpenAI API.
+        """
         self.azure_config = azure_config
         self.openai_config = openai_config
         
@@ -1389,7 +1602,19 @@ class DocumentUploader:
     
     def upload_chunks(self, chunks: List[Dict[str, Any]]) -> None:
         """
-        Upload document chunks to Azure AI Search index
+        Upload document chunks to Azure AI Search index.
+        
+        This method handles the batch uploading of document chunks to the configured
+        Azure AI Search index. It performs validation of the index structure for vector search,
+        processes documents in batches of 1000 (Azure Search limit), and handles error recovery
+        if vector fields cause issues during upload.
+        
+        Args:
+            chunks (List[Dict[str, Any]]): List of document chunks to upload, where each chunk
+                is a dictionary containing fields like id, content, file_name, etc.
+                
+        Raises:
+            Exception: If there's an error during the upload process that can't be recovered from.
         """
         try:
             # If we're doing vector search but the index doesn't have the vector field properly set up
@@ -1485,7 +1710,17 @@ class DocumentUploader:
     
     def _ensure_valid_document(self, document: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Ensure all fields have valid data types for Azure Search
+        Ensure all fields have valid data types for Azure Search.
+        
+        This method validates and corrects document fields to ensure they meet
+        Azure AI Search requirements, particularly for date fields which need
+        to be in a specific format.
+        
+        Args:
+            document (Dict[str, Any]): The document to validate and correct.
+            
+        Returns:
+            Dict[str, Any]: The validated and corrected document.
         """
         # Current time in ISO 8601 UTC format as a fallback
         default_date = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1507,7 +1742,21 @@ class DocumentUploader:
 
 class RAGDocumentProcessor:
     """
-    Main class that orchestrates the entire process of processing documents for RAG
+    Main orchestration class for the entire RAG document processing pipeline.
+    
+    This class coordinates the end-to-end process of preparing documents for Retrieval-Augmented
+    Generation (RAG), including document processing, text chunking, embedding generation,
+    index management, and document uploading to Azure AI Search.
+    
+    Attributes:
+        processing_config (ProcessingConfig): Configuration for document processing.
+        azure_config (AzureSearchConfig): Configuration for Azure AI Search.
+        openai_config (OpenAIConfig): Configuration for OpenAI API.
+        document_processor (DocumentProcessor): Handles extraction of text and metadata from files.
+        text_chunker (TextChunker): Splits text into appropriate chunks.
+        embedding_generator (EmbeddingGenerator): Generates vector embeddings for text chunks.
+        index_manager (AzureSearchIndexManager): Manages the Azure AI Search index.
+        document_uploader (DocumentUploader): Uploads processed chunks to Azure AI Search.
     """
     
     def __init__(
@@ -1516,6 +1765,14 @@ class RAGDocumentProcessor:
         azure_config: AzureSearchConfig,
         openai_config: OpenAIConfig
     ):
+        """
+        Initialize the RAGDocumentProcessor with necessary configurations and components.
+        
+        Args:
+            processing_config (ProcessingConfig): Configuration for document processing.
+            azure_config (AzureSearchConfig): Configuration for Azure AI Search.
+            openai_config (OpenAIConfig): Configuration for OpenAI API.
+        """
         self.processing_config = processing_config
         self.azure_config = azure_config
         self.openai_config = openai_config
@@ -1528,7 +1785,19 @@ class RAGDocumentProcessor:
     
     def process(self) -> None:
         """
-        Process all documents and upload to Azure AI Search
+        Process all documents and upload to Azure AI Search.
+        
+        This method orchestrates the entire pipeline:
+        1. Creates or updates the search index
+        2. Walks through the specified directory to process each file
+        3. Extracts text and metadata from each file
+        4. Chunks the text into appropriate segments
+        5. Generates embeddings for each chunk if vector search is enabled
+        6. Uploads all processed chunks to Azure AI Search
+        
+        Raises:
+            Various exceptions may be raised during processing, which are logged
+            but not propagated unless they occur during the final upload step.
         """
         # Create or update the search index
         self.index_manager.create_or_update_index()
@@ -1644,7 +1913,16 @@ class RAGDocumentProcessor:
     
     def _should_process_file(self, file_path: str) -> bool:
         """
-        Determine if a file should be processed based on include/exclude filters
+        Determine if a file should be processed based on include/exclude filters.
+        
+        This method checks if a file matches the include and exclude patterns
+        specified in the processing configuration.
+        
+        Args:
+            file_path (str): The path of the file to check.
+            
+        Returns:
+            bool: True if the file should be processed, False otherwise.
         """
         # If no filters are set, process all files
         if not self.processing_config.include_filters and not self.processing_config.exclude_filters:
@@ -1670,7 +1948,16 @@ class RAGDocumentProcessor:
     
     def _detect_language(self, text: str) -> str:
         """
-        Detect the language of the text
+        Detect the language of the text.
+        
+        Uses the langdetect library to identify the language of the provided text.
+        
+        Args:
+            text (str): The text to analyze for language detection.
+            
+        Returns:
+            str: The detected language code (e.g., 'en' for English).
+                 Defaults to 'en' if detection fails.
         """
         try:
             # Use a sample of the text for faster detection
@@ -1682,7 +1969,23 @@ class RAGDocumentProcessor:
 
 def main():
     """
-    Main entry point for the script
+    Main entry point for the RAG document processing script.
+    
+    This function:
+    1. Parses command-line arguments to configure the processing pipeline
+    2. Validates the provided arguments for consistency and completeness
+    3. Creates the necessary configuration objects
+    4. Initializes and runs the RAGDocumentProcessor
+    
+    Command-line arguments include options for:
+    - Document processing (folder path, chunk size, chunk overlap)
+    - Azure AI Search configuration (endpoint, key, index name)
+    - Vector search capabilities (dimensions, OpenAI settings)
+    - Semantic search capabilities
+    - File filtering (include/exclude patterns)
+    
+    Returns:
+        None. The function logs progress and errors to the console.
     """
     parser = argparse.ArgumentParser(description='Upload documents to Azure AI Search for RAG')
     parser.add_argument('--folder', type=str, required=True, help='Folder containing documents to upload')
