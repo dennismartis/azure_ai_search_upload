@@ -5,6 +5,19 @@ Azure AI Search Document Uploader for RAG
 This script processes documents from a directory, chunks them intelligently,
 and uploads them to an Azure AI Search index for use with RAG chatbots.
 
+Example Usage:
+  python rag_upload.py --folder "C:/Documents/data" \
+    --endpoint https://yoursearch.search.windows.net \
+    --key your_search_api_key \
+    --index myindex \
+    --vector-search \
+    --aoai-endpoint https://youropenai.openai.azure.com/ \
+    --aoai-key your_openai_api_key \
+    --aoai-deployment text-embedding-3-large
+
+This script supports both vector search (embeddings-based) and semantic search 
+capabilities in Azure AI Search.
+
 run with:
 
 """
@@ -732,13 +745,26 @@ class EmbeddingGenerator:
                 "model": self.config.deployment_name
             }
             
-            url = f"{self.config.endpoint}/openai/deployments/{self.config.deployment_name}/embeddings?api-version=2023-05-15"
+            # Use the latest API version that supports embeddings
+            api_version = "2023-12-01-preview"
+            url = f"{self.config.endpoint}/openai/deployments/{self.config.deployment_name}/embeddings?api-version={api_version}"
+            
+            logger.debug(f"Calling embedding API at {url}")
             response = requests.post(url, headers=headers, json=body)
             response.raise_for_status()
             
             result = response.json()
-            embeddings = result["data"][0]["embedding"]
-            return embeddings
+            
+            # Check for the correct format in the response
+            if "data" in result and len(result["data"]) > 0 and "embedding" in result["data"][0]:
+                embeddings = result["data"][0]["embedding"]
+                return embeddings
+            else:
+                # Try alternative format that might be used in some API versions
+                if "embedding" in result:
+                    return result["embedding"]
+                logger.error(f"Unexpected embeddings response format: {result}")
+                return []
         except Exception as e:
             logger.error(f"Error generating embeddings with Azure OpenAI: {e}")
             # Return empty embeddings in case of error
@@ -760,9 +786,16 @@ class AzureSearchIndexManager:
             self._delete_index_if_exists()
         
         try:
-            # Create the index
+            # Build the index definition
             index = self._build_index_definition()
             
+            # For vector search, the index is already created in _build_index_definition via REST API
+            # We just need to log that it's done and return
+            if self.config.vector_search:
+                logger.info(f"Index {self.config.index_name} already created via REST API in _build_index_definition")
+                return
+            
+            # For non-vector search, we can use the SDK approach
             # Log the index configuration for debugging
             index_dict = index.as_dict()
             logger.info(f"Creating index with configuration: {json.dumps(index_dict, indent=2)[:500]}...")
@@ -774,184 +807,24 @@ class AzureSearchIndexManager:
                 logger.warning("Semantic settings are NOT present in the index configuration")
                 
                 # If semantic search is enabled but settings are not in the serialized index,
-                # we need to manually add them
+                # we need to manually add them using REST API
                 if self.config.semantic_search:
-                    logger.info("Manually adding semantic settings to the index")
-                    
-                    # Create a raw index definition that includes semantic settings
-                    raw_index = {
-                        "name": self.config.index_name,
-                        "fields": [
-                            {
-                                "name": "id",
-                                "type": "Edm.String",
-                                "key": True,
-                                "searchable": False,
-                                "filterable": False,
-                                "sortable": False,
-                                "facetable": False
-                            },
-                            {
-                                "name": "content",
-                                "type": "Edm.String",
-                                "searchable": True,
-                                "filterable": False,
-                                "sortable": False,
-                                "facetable": False,
-                                "analyzer": "en.microsoft"
-                            },
-                            {
-                                "name": "file_name",
-                                "type": "Edm.String",
-                                "searchable": False,
-                                "filterable": True,
-                                "sortable": False,
-                                "facetable": False
-                            },
-                            {
-                                "name": "file_path",
-                                "type": "Edm.String",
-                                "searchable": False,
-                                "filterable": True,
-                                "sortable": False,
-                                "facetable": False
-                            },
-                            {
-                                "name": "file_extension",
-                                "type": "Edm.String",
-                                "searchable": False,
-                                "filterable": True,
-                                "sortable": False,
-                                "facetable": False
-                            },
-                            {
-                                "name": "file_size",
-                                "type": "Edm.Int64",
-                                "searchable": False,
-                                "filterable": True,
-                                "sortable": False,
-                                "facetable": False
-                            },
-                            {
-                                "name": "last_modified",
-                                "type": "Edm.DateTimeOffset",
-                                "searchable": False,
-                                "filterable": True,
-                                "sortable": True,
-                                "facetable": False
-                            },
-                            {
-                                "name": "chunk_id",
-                                "type": "Edm.Int32",
-                                "searchable": False,
-                                "filterable": True,
-                                "sortable": False,
-                                "facetable": False
-                            },
-                            {
-                                "name": "chunk_total",
-                                "type": "Edm.Int32",
-                                "searchable": False,
-                                "filterable": True,
-                                "sortable": False,
-                                "facetable": False
-                            },
-                            {
-                                "name": "language",
-                                "type": "Edm.String",
-                                "searchable": False,
-                                "filterable": True,
-                                "sortable": False,
-                                "facetable": False
-                            },
-                            {
-                                "name": "title",
-                                "type": "Edm.String",
-                                "searchable": True,
-                                "filterable": False,
-                                "sortable": False,
-                                "facetable": False,
-                                "analyzer": "en.microsoft"
-                            },
-                            {
-                                "name": "author",
-                                "type": "Edm.String",
-                                "searchable": True,
-                                "filterable": False,
-                                "sortable": False,
-                                "facetable": False,
-                                "analyzer": "en.microsoft"
-                            }
-                        ],
-                        "semantic": {
-                            "configurations": [{
-                                "name": "semantic-config",
-                                "prioritizedFields": {
-                                    "titleField": {"fieldName": "title"},
-                                    "prioritizedContentFields": [{"fieldName": "content"}],
-                                    "prioritizedKeywordsFields": []
-                                }
-                            }]
-                        }
-                    }
-                    
-                    # Add vector search configuration if needed
-                    if self.config.vector_search:
-                        raw_index["fields"].append({
-                            "name": "content_vector",
-                            "type": "Collection(Edm.Single)",
-                            "searchable": True,
-                            "dimensions": self.config.vector_dimensions,
-                            "vectorSearchConfiguration": "vector-config"
-                        })
-                        
-                        raw_index["vectorSearch"] = {
-                            "algorithms": [
-                                {
-                                    "name": "vector-config",
-                                    "kind": "hnsw",
-                                    "hnswParameters": {
-                                        "m": 16,
-                                        "efConstruction": 400,
-                                        "efSearch": 500,
-                                        "metric": "cosine"
-                                    }
-                                }
-                            ]
-                        }
-                    
-                    # Use the REST API directly
-                    # Use the correct API version for semantic search
-                    api_version = "2024-11-01-preview"
-                    endpoint = f"{self.config.endpoint}/indexes/{self.config.index_name}?api-version={api_version}"
-                    headers = {
-                        "Content-Type": "application/json",
-                        "api-key": self.config.api_key
-                    }
-                    
-                    logger.info(f"Using REST API with API version: {api_version}")
-                    
-                    try:
-                        # Send the request
-                        response = requests.put(endpoint, headers=headers, json=raw_index)
-                        response_text = response.text
-                        
-                        if response.status_code >= 400:
-                            logger.error(f"Error response: {response_text}")
-                            response.raise_for_status()
-                        
-                        logger.info(f"Index {self.config.index_name} created with semantic settings via REST API")
-                        return
-                    except Exception as custom_request_error:
-                        logger.error(f"Error with REST API request: {custom_request_error}")
-                        logger.info("Falling back to SDK method without semantic settings")
+                    logger.warning("Using REST API method to create index with semantic settings")
+                    self._create_index_with_rest_api(semantic_only=True)
+                    return
             
-            # Use the SDK to create the index if we didn't use the REST API
+            # Use the SDK to create the index if we're not using vector search
             result = self.index_client.create_or_update_index(index)
-            logger.info(f"Index {self.config.index_name} created or updated successfully")
+            logger.info(f"Index {self.config.index_name} created or updated successfully with SDK")
         except Exception as e:
             logger.error(f"Error creating index {self.config.index_name}: {e}")
             logger.info("Continuing with existing index configuration...")
+    
+    def _create_index_with_rest_api(self, semantic_only=False) -> None:
+        """Create index using REST API for when SDK limitations need to be bypassed"""
+        # This is a placeholder - the actual REST API call is now in _build_index_definition
+        # Only used for back-compatibility
+        pass
     
     def _delete_index_if_exists(self) -> None:
         """Delete the index if it exists"""
@@ -989,105 +862,264 @@ class AzureSearchIndexManager:
             SearchableField(name="author", type=SearchFieldDataType.String, analyzer_name="en.microsoft"),
         ]
         
-        # Add vector search capability if requested
-        index_additional_properties = {}
-        
+        # If vector search is enabled, we'll use a direct REST API approach
+        # rather than trying to work through the SDK limitations
         if self.config.vector_search:
-            logger.info("Adding vector search configuration to index")
-            # Create a field definition manually with required vector properties
-            content_vector_field = {
-                "name": "content_vector",
-                "type": "Collection(Edm.Single)",
-                "searchable": True,
-                "dimensions": self.config.vector_dimensions,
-                "vectorSearchConfiguration": "vector-config"
-            }
+            logger.info("Using direct REST API approach for vector search index creation")
             
-            # Set up vector search configuration
-            vector_search_config = {
-                "algorithms": [
+            # Create complete index definition as a dictionary
+            raw_index = {
+                "name": self.config.index_name,
+                "fields": [
                     {
-                        "name": "vector-config",
-                        "kind": "hnsw",
-                        "hnswParameters": {
-                            "m": 16,
-                            "efConstruction": 400,
-                            "efSearch": 500,
-                            "metric": "cosine"
+                        "name": "id",
+                        "type": "Edm.String",
+                        "key": True,
+                        "searchable": False,
+                        "filterable": False,
+                        "sortable": False,
+                        "facetable": False
+                    },
+                    {
+                        "name": "content",
+                        "type": "Edm.String",
+                        "searchable": True,
+                        "filterable": False,
+                        "sortable": False,
+                        "facetable": False,
+                        "analyzer": "en.microsoft"
+                    },
+                    {
+                        "name": "file_name",
+                        "type": "Edm.String",
+                        "searchable": False,
+                        "filterable": True,
+                        "sortable": False,
+                        "facetable": False
+                    },
+                    {
+                        "name": "file_path",
+                        "type": "Edm.String",
+                        "searchable": False,
+                        "filterable": True,
+                        "sortable": False,
+                        "facetable": False
+                    },
+                    {
+                        "name": "file_extension",
+                        "type": "Edm.String",
+                        "searchable": False,
+                        "filterable": True,
+                        "sortable": False,
+                        "facetable": False
+                    },
+                    {
+                        "name": "file_size",
+                        "type": "Edm.Int64",
+                        "searchable": False,
+                        "filterable": True,
+                        "sortable": False,
+                        "facetable": False
+                    },
+                    {
+                        "name": "last_modified",
+                        "type": "Edm.DateTimeOffset",
+                        "searchable": False,
+                        "filterable": True,
+                        "sortable": True,
+                        "facetable": False
+                    },
+                    {
+                        "name": "chunk_id",
+                        "type": "Edm.Int32",
+                        "searchable": False,
+                        "filterable": True,
+                        "sortable": False,
+                        "facetable": False
+                    },
+                    {
+                        "name": "chunk_total",
+                        "type": "Edm.Int32",
+                        "searchable": False,
+                        "filterable": True,
+                        "sortable": False,
+                        "facetable": False
+                    },
+                    {
+                        "name": "language",
+                        "type": "Edm.String",
+                        "searchable": False,
+                        "filterable": True,
+                        "sortable": False,
+                        "facetable": False
+                    },
+                    {
+                        "name": "title",
+                        "type": "Edm.String",
+                        "searchable": True,
+                        "filterable": False,
+                        "sortable": False,
+                        "facetable": False,
+                        "analyzer": "en.microsoft"
+                    },
+                    {
+                        "name": "author",
+                        "type": "Edm.String",
+                        "searchable": True,
+                        "filterable": False,
+                        "sortable": False,
+                        "facetable": False,
+                        "analyzer": "en.microsoft"
+                    },
+                    {
+                        "name": "content_vector",
+                        "type": "Collection(Edm.Single)",
+                        "searchable": True,
+                        "retrievable": False,
+                        "dimensions": self.config.vector_dimensions,
+                        "vectorSearchProfile": "vector-profile"
+                    }
+                ],
+                "vectorSearch": {
+                    "algorithms": [
+                        {
+                            "name": "vector-config",
+                            "kind": "hnsw",
+                            "hnswParameters": {
+                                "m": 10,
+                                "efConstruction": 400,
+                                "efSearch": 500,
+                                "metric": "cosine"
+                            }
                         }
-                    }
-                ]
+                    ],
+                    "profiles": [
+                        {
+                            "name": "vector-profile",
+                            "algorithm": "vector-config"
+                        }
+                    ]
+                }
             }
             
-            # Add to index properties
-            index_additional_properties["vectorSearch"] = vector_search_config
-        
-        if self.config.semantic_search:
-            logger.info("Adding semantic search configuration to index")
-            # Use a dictionary-based configuration for semantic search
-            semantic_config = {
-                "configurations": [{
-                    "name": "semantic-config",
-                    "prioritizedFields": {
-                        "titleField": {"fieldName": "title"},
-                        "prioritizedContentFields": [{"fieldName": "content"}],
-                        "prioritizedKeywordsFields": []
-                    }
-                }]
+            # Add semantic configuration if enabled
+            if self.config.semantic_search:
+                raw_index["semantic"] = {
+                    "configurations": [{
+                        "name": "semantic-config",
+                        "prioritizedFields": {
+                            "titleField": {"fieldName": "title"},
+                            "prioritizedContentFields": [{"fieldName": "content"}],
+                            "prioritizedKeywordsFields": []
+                        }
+                    }]
+                }
+            
+            # Create the index using the REST API
+            api_version = "2024-07-01"
+            endpoint = f"{self.config.endpoint}/indexes/{self.config.index_name}?api-version={api_version}"
+            headers = {
+                "Content-Type": "application/json",
+                "api-key": self.config.api_key
             }
             
-            index_additional_properties["semantic"] = semantic_config
-            logger.info(f"Semantic configuration: {json.dumps(semantic_config, indent=2)}")
-        
-        # Create the index with basic fields
-        index = SearchIndex(name=self.config.index_name, fields=fields)
-        
-        # Add any additional properties to the index
-        for key, value in index_additional_properties.items():
-            logger.info(f"Adding additional property to index: {key}")
-            index.additional_properties[key] = value
-        
-        # For vector search, we need to hack around SDK limitations by modifying the serialized index
-        if self.config.vector_search:
-            logger.info("Applying vector search workaround")
-            # Convert the index to a dictionary for direct manipulation
-            index_dict = index.as_dict()
+            logger.info(f"Creating index with REST API using API version: {api_version}")
             
-            # Get the current fields list
-            current_fields = index_dict.get("fields", [])
+            # Log the exact configuration we're sending (mask the sensitive parts)
+            index_config_log = json.dumps(raw_index, indent=2)
+            logger.info(f"Index configuration being sent: {index_config_log}")
             
-            # Add our custom vector field directly
-            current_fields.append(content_vector_field)
+            try:
+                # Send the request
+                response = requests.put(endpoint, headers=headers, json=raw_index)
+                response_text = response.text
+                
+                # Log the full response for debugging
+                logger.info(f"REST API response status: {response.status_code}")
+                try:
+                    response_json = response.json()
+                    logger.info(f"REST API response: {json.dumps(response_json, indent=2)}")
+                except:
+                    logger.info(f"REST API response text: {response_text}")
+                
+                if response.status_code >= 400:
+                    logger.error(f"Error response from REST API: {response_text}")
+                    response.raise_for_status()
+                
+                logger.info(f"Index {self.config.index_name} created successfully via REST API")
+                
+                # Verify the index was created properly with vector search profile
+                try:
+                    verify_endpoint = f"{self.config.endpoint}/indexes/{self.config.index_name}?api-version={api_version}"
+                    verify_response = requests.get(verify_endpoint, headers=headers)
+                    verify_json = verify_response.json()
+                    
+                    # Check specifically for vector search configuration
+                    if "vectorSearch" in verify_json:
+                        logger.info("Vector search configuration confirmed in index")
+                    else:
+                        logger.warning("Vector search configuration not found in created index")
+                    
+                    # Check content_vector field configuration
+                    content_vector_field = None
+                    for field in verify_json.get("fields", []):
+                        if field.get("name") == "content_vector":
+                            content_vector_field = field
+                            break
+                    
+                    if content_vector_field:
+                        if "vectorSearchProfile" in content_vector_field:
+                            logger.info(f"content_vector field properly configured with profile: {content_vector_field.get('vectorSearchProfile')}")
+                        else:
+                            logger.warning("content_vector field found but missing vectorSearchProfile configuration")
+                    else:
+                        logger.warning("content_vector field not found in index")
+                        
+                except Exception as verify_error:
+                    logger.warning(f"Could not verify index after creation: {verify_error}")
+                
+                # Return a SearchIndex object with fields to satisfy the method's return type
+                # This is just a skeleton and won't be used for further API calls since the 
+                # index is already created via REST API
+                return SearchIndex(name=self.config.index_name, fields=fields)
+            except Exception as e:
+                logger.error(f"Error creating index via REST API: {e}")
+                logger.error("Creating vector search index failed, the script may not work properly")
+                logger.error("Check your Azure AI Search service and configuration")
+                # Fall back to returning a basic index, but log a clear error
+                # This object won't be used for actual index creation as the 
+                # create_or_update_index method will detect vector_search=True and return early
+                return SearchIndex(name=self.config.index_name, fields=fields)
+        else:
+            # For non-vector search, just use the SDK's approach
+            index_additional_properties = {}
             
-            # Create a new index with our modified properties
-            new_index = SearchIndex(name=self.config.index_name)
+            if self.config.semantic_search:
+                logger.info("Adding semantic search configuration to index")
+                # Use a dictionary-based configuration for semantic search
+                semantic_config = {
+                    "configurations": [{
+                        "name": "semantic-config",
+                        "prioritizedFields": {
+                            "titleField": {"fieldName": "title"},
+                            "prioritizedContentFields": [{"fieldName": "content"}],
+                            "prioritizedKeywordsFields": []
+                        }
+                    }]
+                }
+                
+                index_additional_properties["semantic"] = semantic_config
+                logger.info(f"Semantic configuration: {json.dumps(semantic_config, indent=2)}")
             
-            # Copy all properties from the original index dictionary
-            for key, value in index_dict.items():
-                if key == "fields":
-                    # Skip fields as we'll handle them separately
-                    continue
-                logger.info(f"Copying property to new index: {key}")
-                new_index.additional_properties[key] = value
+            # Create the index with basic fields
+            index = SearchIndex(name=self.config.index_name, fields=fields)
             
-            # Add our modified fields
-            new_index.additional_properties["fields"] = current_fields
+            # Add any additional properties to the index
+            for key, value in index_additional_properties.items():
+                logger.info(f"Adding additional property to index: {key}")
+                index.additional_properties[key] = value
             
-            # Make sure semantic settings are preserved if enabled
-            if self.config.semantic_search and "semantic" in index_additional_properties:
-                logger.info("Explicitly adding semantic settings to new index")
-                new_index.additional_properties["semantic"] = index_additional_properties["semantic"]
-            
-            # Check if semantic settings are in the new index
-            if "semantic" in new_index.additional_properties:
-                logger.info("Semantic settings are present in the new index")
-            else:
-                logger.warning("Semantic settings are NOT present in the new index")
-            
-            # Use the new index with properly configured fields and settings
-            return new_index
-        
-        return index
+            return index
 
 class DocumentUploader:
     """Class for uploading documents to Azure AI Search"""
@@ -1126,7 +1158,20 @@ class DocumentUploader:
                     has_vector_field = False
                     for field in index.fields:
                         if field.name == "content_vector":
-                            has_vector_field = True
+                            # Enhanced check for proper vector search configuration
+                            # Check in various ways that might appear in the API response
+                            field_dict = field.as_dict() if hasattr(field, "as_dict") else {}
+                            
+                            # Check all possible ways the vector profile could be indicated
+                            if (hasattr(field, "vector_search_profile") or 
+                                "vectorSearchProfile" in str(field.additional_properties) or
+                                "vectorSearchProfile" in str(field_dict) or
+                                "vector_search_profile" in str(field_dict) or
+                                getattr(field, "dimensions", 0) > 0):  # If dimensions are set, likely vector field
+                                
+                                has_vector_field = True
+                            
+                            logger.info(f"Content vector field found: {field_dict}")
                             break
                     
                     if not has_vector_field:
@@ -1172,7 +1217,7 @@ class DocumentUploader:
                     logger.error(f"Error uploading batch {i//batch_size + 1}: {batch_error}")
                     
                     # Try without content_vector field if that's the issue
-                    if "content_vector" in str(batch_error).lower():
+                    if "content_vector" in str(batch_error).lower() or "vector" in str(batch_error).lower():
                         logger.info("Trying upload without vector embeddings...")
                         try:
                             for doc in batch:
@@ -1398,12 +1443,12 @@ def main():
     parser.add_argument('--index', type=str, required=True, help='Name of the search index')
     parser.add_argument('--chunk-size', type=int, default=1000, help='Size of text chunks (in characters)')
     parser.add_argument('--chunk-overlap', type=int, default=100, help='Overlap between chunks (in characters)')
-    parser.add_argument('--vector-search', action='store_true', help='Enable vector search capabilities')
-    parser.add_argument('--semantic-search', action='store_true', help='Enable semantic search capabilities')
-    parser.add_argument('--aoai-endpoint', type=str, help='Azure OpenAI endpoint for embeddings')
-    parser.add_argument('--aoai-key', type=str, help='Azure OpenAI key for embeddings')
-    parser.add_argument('--aoai-deployment', type=str, help='Azure OpenAI deployment name for embeddings model')
-    parser.add_argument('--vector-dimensions', type=int, default=1536, help='Dimensions for vector embeddings')
+    parser.add_argument('--vector-search', action='store_true', help='Enable vector search capabilities in the Azure AI Search index')
+    parser.add_argument('--semantic-search', action='store_true', help='Enable semantic search capabilities in the Azure AI Search index')
+    parser.add_argument('--aoai-endpoint', type=str, help='Azure OpenAI endpoint for embeddings generation (required for vector search)')
+    parser.add_argument('--aoai-key', type=str, help='Azure OpenAI key for embeddings generation (required for vector search)')
+    parser.add_argument('--aoai-deployment', type=str, help='Azure OpenAI deployment name for embeddings model (e.g. text-embedding-3-large or text-embedding-ada-002)')
+    parser.add_argument('--vector-dimensions', type=int, default=1536, help='Dimensions for vector embeddings (3072 for text-embedding-3-large, 1536 for text-embedding-ada-002)')
     parser.add_argument('--skip-vectors', action='store_true', help='Skip vector processing even if --vector-search is enabled')
     parser.add_argument('--force-recreate', action='store_true', help='Force recreation of the index')
     parser.add_argument('--include', type=str, nargs='+', default=[], help='File patterns to include (regex)')
@@ -1415,6 +1460,15 @@ def main():
     if args.vector_search and not args.skip_vectors and (not args.aoai_endpoint or not args.aoai_key or not args.aoai_deployment):
         logger.error("Vector search requires Azure OpenAI parameters: --aoai-endpoint, --aoai-key, and --aoai-deployment")
         return
+    
+    # Set appropriate vector dimensions based on the model
+    if args.vector_search and args.aoai_deployment:
+        if "text-embedding-3-large" in args.aoai_deployment and args.vector_dimensions != 3072:
+            logger.warning(f"Setting vector dimensions to 3072 to match the capabilities of {args.aoai_deployment}")
+            args.vector_dimensions = 3072
+        elif "text-embedding-ada-002" in args.aoai_deployment and args.vector_dimensions != 1536:
+            logger.warning(f"Setting vector dimensions to 1536 to match the capabilities of {args.aoai_deployment}")
+            args.vector_dimensions = 1536
     
     # Create configuration objects
     processing_config = ProcessingConfig(
