@@ -224,6 +224,8 @@ For more advanced scenarios, you may need to modify the script directly:
 - Additional file formats: Add new extractors to the `DocumentProcessor` class
 - Custom chunking strategies: Modify the `TextChunker` class
 
+![Flow Diagram](flow_diagram.svg)
+
 ## License
 
 This code is provided as-is with no warranties. Use at your own risk.
