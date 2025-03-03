@@ -227,60 +227,47 @@ class DocumentProcessor:
     
     def _extract_text_from_pdf(self, file_path: str) -> Dict[str, Any]:
         """
-        Extract text and metadata from PDF files with semantic awareness.
-        
-        This method processes PDF files while preserving structural information:
-        - Extracts metadata from PDF properties
-        - Preserves page boundaries with subtle markers
-        - Identifies potential section headers
-        - Maintains document flow for better semantic chunking
-        
-        Args:
-            file_path (str): Path to the PDF file
-            
-        Returns:
-            Dict[str, Any]: Dictionary containing:
-                - text: Extracted text content with page markers
-                - metadata: PDF-specific metadata and properties
+        Extract text and metadata from PDF files with improved text extraction.
+        Uses pymupdf (fitz) for better handling of complex PDF layouts.
         """
         text = ""
         metadata = {}
         
         try:
-            with open(file_path, 'rb') as file:
-                # Initialize PDF reader
-                pdf_reader = PyPDF2.PdfReader(file)
+            import fitz  # pymupdf
+            
+            # Open the PDF
+            doc = fitz.open(file_path)
+            
+            # Extract document metadata
+            for key, value in doc.metadata.items():
+                if value and isinstance(value, str):
+                    metadata[key] = value
+            
+            # Process each page
+            full_text = []
+            for page_num, page in enumerate(doc):
+                # Extract text with better layout preservation
+                page_text = page.get_text("text")  # Use "text" mode for basic text
+                # Alternative: page_text = page.get_text("blocks") and then process the blocks
                 
-                # Extract PDF document properties as metadata
-                if pdf_reader.metadata:
-                    for key, value in pdf_reader.metadata.items():
-                        if value and isinstance(value, str):
-                            metadata[key] = value
-                
-                # Process each page while preserving document structure
-                full_text = []
-                for page_num in range(len(pdf_reader.pages)):
-                    page = pdf_reader.pages[page_num]
-                    page_text = page.extract_text()
-                    
-                    if page_text:
-                        # Add page marker in a format that won't disrupt semantic analysis
-                        # [pg:N] format is used by the chunker to maintain page context
-                        processed_text = f"{page_text.strip()}\n[pg:{page_num + 1}]\n\n"
-                        full_text.append(processed_text)
-                
-                # Record total page count in metadata
-                metadata["pdf_page_count"] = len(pdf_reader.pages)
-                
-                # Combine all pages into a single text stream
-                text = "".join(full_text)
-                
-                # Identify potential section headers for better chunking
-                # Look for patterns like "INTRODUCTION", "CHAPTER 1", etc.
-                headers = re.findall(r'\n([A-Z][A-Z\s]{3,}[A-Z])[^a-z]', text)
-                if headers:
-                    metadata["potential_sections"] = headers
-                
+                if page_text:
+                    # Clean up any excessive whitespace while preserving paragraphs
+                    cleaned_text = "\n".join(line.strip() for line in page_text.splitlines() if line.strip())
+                    # Add page marker
+                    processed_text = f"{cleaned_text}\n[pg:{page_num + 1}]\n\n"
+                    full_text.append(processed_text)
+            
+            # Record total page count in metadata
+            metadata["pdf_page_count"] = len(doc)
+            
+            # Combine all pages into a single text stream
+            text = "".join(full_text)
+            
+        except ImportError:
+            logger.warning("pymupdf not installed, falling back to PyPDF2")
+            # Fall back to original method if pymupdf is not available
+            return self._extract_text_from_pdf_original(file_path)
         except Exception as e:
             logger.error(f"Error extracting text from PDF {file_path}: {e}")
         

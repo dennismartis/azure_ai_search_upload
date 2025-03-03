@@ -27,7 +27,7 @@ This utility processes documents from a directory, intelligently chunks them, an
 ## Required Python Libraries
 
 ```bash
-pip install azure-search-documents azure-core PyPDF2 python-docx pandas bs4 python-pptx langdetect requests
+pip install azure-search-documents azure-core PyPDF2 python-docx pandas bs4 python-pptx langdetect requests pymupdf
 ```
 
 ## Usage
